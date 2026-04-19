@@ -323,9 +323,12 @@ def train_one_epoch(
 
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+        old_scale = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
+        new_scale = scaler.get_scale()
+        if new_scale >= old_scale:
+            scheduler.step()
 
         loss_val = loss.item()
         lr_val = scheduler.get_last_lr()[0]

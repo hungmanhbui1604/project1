@@ -1,0 +1,58 @@
+general:
+  seed: 42
+
+wandb:
+  api_key: null
+  project: "DualSwin-MTLD"
+
+data:
+  recog_split_path: data/recog_splits.json
+  pad_split_path: data/pad_splits.json
+  n_genuine_impressions: 2
+  n_impostor_impressions: 1
+  impostor_mode: all
+  n_impostor_subset: null
+
+model:
+  embed_dim_a: 512   # recognition branch output dim
+  embed_dim_b: 2     # PAD branch output dim (live / spoof)
+
+teachers:
+  recog_checkpoint: ckpts/recog/best_model.pth
+  recog_embed_dim: 512
+  pad_checkpoint: ckpts/pad/best_model.pth
+  pad_embed_dim: 2
+
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
+
+loss:
+  # Task loss weights
+  recog_weight: 1.0
+  pad_weight: 1.0
+  # Distillation weights
+  output_distill_weight: 1.0
+  inter_distill_weight: 0.5
+  temperature: 4.0
+  # ArcFace params
+  margin: 0.5
+  scale: 64.0
+
+optimizer:
+  lr: 3.0e-4
+  weight_decay: 0.05
+
+scheduler:
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+
+output:
+  checkpoint_dir: ckpts/mtld/
+  best_model_name: best_model.pth
+
+evaluation:
+  batch_size: 1024

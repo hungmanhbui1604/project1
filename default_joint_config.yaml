@@ -2,15 +2,18 @@ general:
   seed: 42
 
 wandb:
-  api_key: ""
-  project: "SwinT-Recognition"
+  api_key: null
+  project: "DualSwin-Joint"
 
 model:
-  embed_dim: 512
+  embed_dim_a: 512   # recognition branch
+  embed_dim_b: 2     # PAD branch (live/spoof)
 
 loss:
   margin: 0.5
   scale: 64.0
+  recog_weight: 1.0
+  pad_weight: 1.0
 
 optimizer:
   lr: 3.0e-4
@@ -28,14 +31,15 @@ training:
   checkpoint_interval: 20
 
 data:
-  split_path: "data/recog_splits.json"
+  recog_split_path: "data/recog_splits.json"
+  pad_split_path: "data/pad_splits.json"
   n_genuine_impressions: 32
   n_impostor_impressions: 1
   impostor_mode: "all"
   n_impostor_subset: null
 
 output:
-  checkpoint_dir: "ckpts/recog/"
+  checkpoint_dir: "ckpts/joint/"
   best_model_name: "best_model.pth"
 
 evaluation:

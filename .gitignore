@@ -2,6 +2,8 @@ __pycache__/
 ckpts/
 data/
 wandb/
+data.zip
 joint_config.yaml
 pad_config.yaml
 recog_config.yaml
+mtld_config.yaml

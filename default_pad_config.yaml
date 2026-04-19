@@ -2,7 +2,7 @@ general:
   seed: 42
 
 wandb:
-  api_key: ""
+  api_key: null
   project: "SwinT-PAD"
 
 model:
