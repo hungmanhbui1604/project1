@@ -1,0 +1,46 @@
+general:
+  seed: 42
+
+wandb:
+  api_key: ""
+  project: "DualSwin-Joint"
+
+model:
+  embed_dim_a: 512   # recognition branch
+  embed_dim_b: 2     # PAD branch (live/spoof)
+
+loss:
+  margin: 0.5
+  scale: 64.0
+  recog_weight: 1.0
+  pad_weight: 1.0
+
+optimizer:
+  lr: 3.0e-4
+  weight_decay: 0.05
+
+scheduler:
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
+
+data:
+  recog_split_path: "data/recog_splits.json"
+  pad_split_path: "data/pad_splits.json"
+  n_genuine_impressions: 32
+  n_impostor_impressions: 1
+  impostor_mode: "all"
+  n_impostor_subset: null
+
+output:
+  checkpoint_dir: "ckpts/joint/"
+  best_model_name: "best_model.pth"
+
+evaluation:
+  batch_size: 1024

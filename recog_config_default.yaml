@@ -1,0 +1,42 @@
+general:
+  seed: 42
+
+wandb:
+  api_key: ""
+  project: "SwinT-Recognition"
+
+model:
+  embed_dim: 512
+
+loss:
+  margin: 0.5
+  scale: 64.0
+
+optimizer:
+  lr: 3.0e-4
+  weight_decay: 0.05
+
+scheduler:
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
+
+data:
+  split_path: "data/recog_splits.json"
+  n_genuine_impressions: 32
+  n_impostor_impressions: 1
+  impostor_mode: "all"
+  n_impostor_subset: null
+
+output:
+  checkpoint_dir: "ckpts/recog/"
+  best_model_name: "best_model.pth"
+
+evaluation:
+  batch_size: 1024

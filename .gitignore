@@ -1,0 +1,7 @@
+__pycache__/
+ckpts/
+data/
+wandb/
+joint_config.yaml
+pad_config.yaml
+recog_config.yaml

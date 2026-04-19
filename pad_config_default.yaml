@@ -1,0 +1,31 @@
+general:
+  seed: 42
+
+wandb:
+  api_key: ""
+  project: "SwinT-PAD"
+
+model:
+  embed_dim: 2
+
+optimizer:
+  lr: 3.0e-4
+  weight_decay: 0.05
+
+scheduler:
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+
+training:
+  epochs: 100
+  batch_size: 64
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
+
+data:
+  split_path: "data/pad_splits.json"
+
+output:
+  checkpoint_dir: "ckpts/pad/"
+  best_model_name: "best_model.pth"
