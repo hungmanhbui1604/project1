@@ -14,7 +14,7 @@ data:
   n_impostor_subset: null
 
 model:
-  embed_dim_a: 128   # recognition branch output dim
+  embed_dim_a: 512   # recognition branch output dim
   embed_dim_b: 2     # PAD branch output dim (live / spoof)
 
 teachers:

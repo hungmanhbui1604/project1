@@ -6,7 +6,7 @@ wandb:
   project: "DualSwin-Joint"
 
 model:
-  embed_dim_a: 128   # recognition branch
+  embed_dim_a: 512   # recognition branch
   embed_dim_b: 2     # PAD branch (live/spoof)
 
 loss:
