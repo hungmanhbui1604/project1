@@ -372,6 +372,7 @@ def train_one_epoch(
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
 
+    total_loss = 0.0
     total_recog_loss = 0.0
     total_pad_loss = 0.0
 
@@ -426,19 +427,22 @@ def train_one_epoch(
         if new_scale >= old_scale:
             scheduler.step()
 
+        total_loss += loss.item()
         total_recog_loss += recog_loss.item()
         total_pad_loss += pad_loss.item()
 
         lr_val = scheduler.get_last_lr()[0]
         pbar.set_postfix(
+            total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
             lr=f"{lr_val:.2e}",
         )
 
+    avg_loss = total_loss / steps_per_epoch
     avg_recog_loss = total_recog_loss / steps_per_epoch
     avg_pad_loss = total_pad_loss / steps_per_epoch
-    return avg_recog_loss, avg_pad_loss
+    return avg_loss, avg_recog_loss, avg_pad_loss
 
 
 # ---------------------------------------------------------------------------
@@ -525,7 +529,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     recog_train_loader = DataLoader(
         recog_train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=recog_train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -540,7 +544,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     pad_train_loader = DataLoader(
         pad_train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["pad_batch_size"],
         sampler=pad_train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -549,7 +553,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # Validation loaders
     recog_val_loader = DataLoader(
         recog_val_dataset,
-        batch_size=evaluation_cfg["batch_size"],
+        batch_size=evaluation_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -564,7 +568,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=unique_val_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -572,7 +576,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     pad_val_loader = DataLoader(
         pad_val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=evaluation_cfg["pad_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -631,6 +635,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         if not wandb.run:
             history = {
                 "epoch": [],
+                "loss": [],
                 "recog_loss": [],
                 "pad_loss": [],
                 "val_eer": [],
@@ -641,11 +646,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
 
         print("\n" + "=" * 60)
-        print(
-            f"Starting joint training  (GPUs: {world_size}  |  "
-            f"effective batch: {training_cfg['batch_size'] * world_size}  |  "
-            f"steps/epoch: {steps_per_epoch})"
-        )
+        print("Starting joint training")
         print("=" * 60)
 
     epoch_pbar = tqdm(
@@ -662,7 +663,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"Loss weights: recog={recog_weight}, pad={pad_weight}")
 
     for epoch in epoch_pbar:
-        avg_recog_loss, avg_pad_loss = train_one_epoch(
+        avg_loss, avg_recog_loss, avg_pad_loss = train_one_epoch(
             model,
             arcface_loss,
             recog_train_loader,
@@ -703,6 +704,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             }
 
             epoch_pbar.set_postfix(
+                loss=f"{avg_loss:.4f}",
                 recog=f"{avg_recog_loss:.4f}",
                 pad=f"{avg_pad_loss:.4f}",
                 eer=f"{eer:.4f}",
@@ -711,6 +713,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "
+                f"loss: {avg_loss:.4f} | "
                 f"recog_loss: {avg_recog_loss:.4f} | pad_loss: {avg_pad_loss:.4f} | "
                 f"val EER: {eer:.4f} (thr={thr:.4f}) | "
                 f"val ACE: {ace:.4f} "
@@ -721,14 +724,16 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             if wandb.run is not None:
                 wandb.log(
                     {
-                        "train/recog_loss_epoch": avg_recog_loss,
-                        "train/pad_loss_epoch": avg_pad_loss,
+                        "train/loss": avg_loss,
+                        "train/recog_loss": avg_recog_loss,
+                        "train/pad_loss": avg_pad_loss,
                         "epoch": epoch,
                         **metrics,
                     }
                 )
             else:
                 history["epoch"].append(epoch)
+                history["loss"].append(avg_loss)
                 history["recog_loss"].append(avg_recog_loss)
                 history["pad_loss"].append(avg_pad_loss)
                 history["val_eer"].append(eer)
@@ -776,6 +781,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
             # Loss
+            axes[0].plot(history["epoch"], history["loss"], "k-", label="Total Loss")
             axes[0].plot(history["epoch"], history["recog_loss"], "g-", label="Recog Loss")
             axes[0].plot(history["epoch"], history["pad_loss"], "r-", label="PAD Loss")
             axes[0].set_xlabel("Epoch")

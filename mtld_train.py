@@ -7,7 +7,6 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 import yaml
 from sklearn.metrics import roc_curve
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -17,12 +16,17 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-from data import PADDataset, RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
+import wandb
+from data import (
+    PADDataset,
+    RecogEvaluationDataset,
+    RecogTrainingDataset,
+    UniqueImageDataset,
+)
 from loss import ArcFaceLoss
 from model import DualSwinTransformerTiny, SwinTransformerTiny
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
-
 
 # ---------------------------------------------------------------------------
 # DDP Utilities
@@ -69,16 +73,6 @@ def _unwrap(module):
 def teacher_forward(
     model: SwinTransformerTiny, x: torch.Tensor
 ) -> dict[str, torch.Tensor]:
-    """
-    Run a frozen SwinTransformerTiny and collect intermediate features.
-
-    Returns:
-        dict with keys:
-            'stage2'  : (B, L2, 192)  – after stage 2
-            'stage3'  : (B, L3, 384)  – after stage 3
-            'stage4'  : (B, L4, 768)  – after stage 4
-            'output'  : (B, embed_dim) – final embedding / logits
-    """
     feats = {}
     x, H, W = model.patch_embed(x)
     x, H, W = model.stages[0](x, H, W)
@@ -101,11 +95,6 @@ def teacher_forward(
 
 
 class FeatureHooks:
-    """
-    Register forward hooks on selected student modules to capture
-    intermediate features during a DDP-compatible forward pass.
-    """
-
     def __init__(self):
         self.features: dict[str, torch.Tensor] = {}
         self._hooks: list[torch.utils.hooks.RemovableHook] = []
@@ -168,7 +157,7 @@ def logit_distillation_loss(
     """Hinton-style KL-divergence loss with temperature scaling."""
     s = F.log_softmax(student_logits.float() / temperature, dim=-1)
     t = F.softmax(teacher_logits.float() / temperature, dim=-1)
-    return F.kl_div(s, t, reduction="batchmean") * (temperature ** 2)
+    return F.kl_div(s, t, reduction="batchmean") * (temperature**2)
 
 
 def compute_distillation_losses(
@@ -179,30 +168,13 @@ def compute_distillation_losses(
     pad_t_feats: dict[str, torch.Tensor],
     temperature: float = 4.0,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    """
-    Compute intermediate and output distillation losses.
-
-    Intermediate (feature) distillation:
-        stage2     : student shared  ← average of both teachers
-        a_stage3/4 : student branch A ← recog teacher
-        b_stage3/4 : student branch B ← PAD teacher
-
-    Output distillation:
-        emb_a : cosine distance  to recog teacher output
-        emb_b : KL divergence    to PAD teacher logits
-
-    Returns:
-        (inter_loss, output_loss, breakdown_dict)
-    """
     breakdown = {}
 
     # ── Shared stage 2: distil from both teachers (averaged) ──────────
     l_s2_recog = feature_distillation_loss(
         student_hooks["stage2"], recog_t_feats["stage2"]
     )
-    l_s2_pad = feature_distillation_loss(
-        student_hooks["stage2"], pad_t_feats["stage2"]
-    )
+    l_s2_pad = feature_distillation_loss(student_hooks["stage2"], pad_t_feats["stage2"])
     l_stage2 = 0.5 * (l_s2_recog + l_s2_pad)
     breakdown["distill/stage2"] = l_stage2.item()
 
@@ -217,20 +189,14 @@ def compute_distillation_losses(
     breakdown["distill/a_stage4"] = l_a_s4.item()
 
     # ── Branch B intermediates ← PAD teacher ──────────────────────────
-    l_b_s3 = feature_distillation_loss(
-        student_hooks["b_stage3"], pad_t_feats["stage3"]
-    )
-    l_b_s4 = feature_distillation_loss(
-        student_hooks["b_stage4"], pad_t_feats["stage4"]
-    )
+    l_b_s3 = feature_distillation_loss(student_hooks["b_stage3"], pad_t_feats["stage3"])
+    l_b_s4 = feature_distillation_loss(student_hooks["b_stage4"], pad_t_feats["stage4"])
     breakdown["distill/b_stage3"] = l_b_s3.item()
     breakdown["distill/b_stage4"] = l_b_s4.item()
 
     # ── Output distillation ───────────────────────────────────────────
     l_emb_a = embedding_distillation_loss(student_emb_a, recog_t_feats["output"])
-    l_emb_b = logit_distillation_loss(
-        student_emb_b, pad_t_feats["output"], temperature
-    )
+    l_emb_b = logit_distillation_loss(student_emb_b, pad_t_feats["output"], temperature)
     breakdown["distill/emb_a"] = l_emb_a.item()
     breakdown["distill/emb_b"] = l_emb_b.item()
 
@@ -584,6 +550,7 @@ def train_one_epoch(
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
 
+    total_loss = 0.0
     total_recog_loss = 0.0
     total_pad_loss = 0.0
     total_inter_distill = 0.0
@@ -657,6 +624,7 @@ def train_one_epoch(
         if new_scale >= old_scale:
             scheduler.step()
 
+        total_loss += loss.item()
         total_recog_loss += recog_loss.item()
         total_pad_loss += pad_loss.item()
         total_inter_distill += inter_loss.item()
@@ -664,6 +632,7 @@ def train_one_epoch(
 
         lr_val = scheduler.get_last_lr()[0]
         pbar.set_postfix(
+            total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
             dist=f"{(inter_loss.item() + output_loss.item()):.4f}",
@@ -671,6 +640,7 @@ def train_one_epoch(
         )
 
     return {
+        "train/loss": total_loss / steps_per_epoch,
         "train/recog_loss": total_recog_loss / steps_per_epoch,
         "train/pad_loss": total_pad_loss / steps_per_epoch,
         "train/inter_distill_loss": total_inter_distill / steps_per_epoch,
@@ -708,9 +678,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(
-            project=wandb_cfg.get("project", "DualSwin-MTLD"), config=cfg
-        )
+        wandb.init(project=wandb_cfg.get("project", "DualSwin-MTLD"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -763,7 +731,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     recog_train_loader = DataLoader(
         recog_train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=recog_train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -778,7 +746,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     pad_train_loader = DataLoader(
         pad_train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["pad_batch_size"],
         sampler=pad_train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -787,7 +755,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # Validation loaders
     recog_val_loader = DataLoader(
         recog_val_dataset,
-        batch_size=evaluation_cfg["batch_size"],
+        batch_size=evaluation_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -802,7 +770,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=unique_val_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -810,7 +778,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     pad_val_loader = DataLoader(
         pad_val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=evaluation_cfg["pad_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -818,7 +786,9 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     # ── Teachers (frozen) ─────────────────────────────────────────────────
     if is_main():
-        print(f"\n[teacher] Loading recog teacher from {teacher_cfg['recog_checkpoint']}")
+        print(
+            f"\n[teacher] Loading recog teacher from {teacher_cfg['recog_checkpoint']}"
+        )
     recog_teacher = load_teacher(
         teacher_cfg["recog_checkpoint"],
         embed_dim=teacher_cfg["recog_embed_dim"],
@@ -915,6 +885,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         if not wandb.run:
             history = {
                 "epoch": [],
+                "loss": [],
                 "recog_loss": [],
                 "pad_loss": [],
                 "inter_distill": [],
@@ -927,11 +898,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
 
         print("\n" + "=" * 70)
-        print(
-            f"Starting MTLD training  (GPUs: {world_size}  |  "
-            f"effective batch: {training_cfg['batch_size'] * world_size}  |  "
-            f"steps/epoch: {steps_per_epoch})"
-        )
+        print("Starting MTLD training")
         print("=" * 70)
 
     epoch_pbar = tqdm(
@@ -973,7 +940,9 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         )
 
         if is_main():
-            eer, thr = evaluate_recog(recog_val_loader, global_embeddings, device, epoch)
+            eer, thr = evaluate_recog(
+                recog_val_loader, global_embeddings, device, epoch
+            )
 
             # ── PAD evaluation ────────────────────────────────────────────
             pad_metrics = evaluate_pad(_unwrap(model), pad_val_loader, device, epoch)
@@ -989,6 +958,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             }
 
             epoch_pbar.set_postfix(
+                total=f"{train_metrics['train/loss']:.4f}",
                 recog=f"{train_metrics['train/recog_loss']:.4f}",
                 pad=f"{train_metrics['train/pad_loss']:.4f}",
                 eer=f"{eer:.4f}",
@@ -997,6 +967,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "
+                f"total: {train_metrics['train/loss']:.4f} | "
                 f"recog: {train_metrics['train/recog_loss']:.4f} | "
                 f"pad: {train_metrics['train/pad_loss']:.4f} | "
                 f"inter_d: {train_metrics['train/inter_distill_loss']:.4f} | "
@@ -1017,10 +988,15 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 )
             else:
                 history["epoch"].append(epoch)
+                history["loss"].append(train_metrics["train/loss"])
                 history["recog_loss"].append(train_metrics["train/recog_loss"])
                 history["pad_loss"].append(train_metrics["train/pad_loss"])
-                history["inter_distill"].append(train_metrics["train/inter_distill_loss"])
-                history["output_distill"].append(train_metrics["train/output_distill_loss"])
+                history["inter_distill"].append(
+                    train_metrics["train/inter_distill_loss"]
+                )
+                history["output_distill"].append(
+                    train_metrics["train/output_distill_loss"]
+                )
                 history["val_eer"].append(eer)
                 history["val_ace"].append(ace)
                 history["val_avg"].append(avg_ace_eer)
@@ -1069,7 +1045,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             fig, axes = plt.subplots(1, 4, figsize=(24, 5))
 
             # Task losses
-            axes[0].plot(history["epoch"], history["recog_loss"], "g-", label="Recog Loss")
+            axes[0].plot(history["epoch"], history["loss"], "k-", label="Total Loss")
+            axes[0].plot(
+                history["epoch"], history["recog_loss"], "g-", label="Recog Loss"
+            )
             axes[0].plot(history["epoch"], history["pad_loss"], "r-", label="PAD Loss")
             axes[0].set_xlabel("Epoch")
             axes[0].set_ylabel("Loss")

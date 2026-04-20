@@ -5,8 +5,6 @@ import torchvision.transforms.functional as F
 
 
 class SquarePad:
-    """Pad image to square before resizing to preserve aspect ratio."""
-
     def __call__(self, image):
         w, h = image.size
         max_wh = max(w, h)
@@ -23,7 +21,7 @@ train_transform = transforms.Compose(
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.RandomRotation(10),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
     ]
 )
 
@@ -32,7 +30,7 @@ test_transform = transforms.Compose(
         SquarePad(),
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
     ]
 )
 

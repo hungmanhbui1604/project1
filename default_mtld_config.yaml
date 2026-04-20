@@ -8,13 +8,13 @@ wandb:
 data:
   recog_split_path: data/recog_splits.json
   pad_split_path: data/pad_splits.json
-  n_genuine_impressions: 2
+  n_genuine_impressions: 32
   n_impostor_impressions: 1
   impostor_mode: all
   n_impostor_subset: null
 
 model:
-  embed_dim_a: 512   # recognition branch output dim
+  embed_dim_a: 128   # recognition branch output dim
   embed_dim_b: 2     # PAD branch output dim (live / spoof)
 
 teachers:
@@ -25,7 +25,8 @@ teachers:
 
 training:
   epochs: 100
-  batch_size: 64
+  recog_batch_size: 128
+  pad_batch_size: 64
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 20
@@ -40,19 +41,20 @@ loss:
   temperature: 4.0
   # ArcFace params
   margin: 0.5
-  scale: 64.0
+  scale: 32.0
 
 optimizer:
-  lr: 3.0e-4
-  weight_decay: 0.05
+  lr: 1.0e-3
+  weight_decay: 0.01
 
 scheduler:
   warmup_epochs: 5
-  min_lr: 1.0e-6
+  min_lr: 1.0e-5
 
 output:
   checkpoint_dir: ckpts/mtld/
   best_model_name: best_model.pth
 
 evaluation:
-  batch_size: 1024
+  recog_batch_size: 1024
+  pad_batch_size: 64

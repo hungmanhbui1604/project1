@@ -3,26 +3,26 @@ general:
 
 wandb:
   api_key: null
-  project: "SwinT-Recog"
+  project: "SwinT-Recognition"
 
 model:
-  embed_dim: 512
+  embed_dim: 128
 
 loss:
   margin: 0.5
-  scale: 64.0
+  scale: 32.0
 
 optimizer:
-  lr: 3.0e-4
-  weight_decay: 0.05
+  lr: 1.0e-3
+  weight_decay: 0.01
 
 scheduler:
   warmup_epochs: 5
-  min_lr: 1.0e-6
+  min_lr: 1.0e-5
 
 training:
   epochs: 100
-  batch_size: 64
+  recog_batch_size: 128
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 20
@@ -39,4 +39,4 @@ output:
   best_model_name: "best_model.pth"
 
 evaluation:
-  batch_size: 1024
+  recog_batch_size: 1024

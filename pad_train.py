@@ -345,14 +345,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["pad_batch_size"],
         sampler=train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["pad_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -402,10 +402,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
 
         print("\n" + "=" * 60)
-        print(
-            f"Starting PAD training  (GPUs: {world_size}  |  "
-            f"effective batch: {training_cfg['batch_size'] * world_size})"
-        )
+        print("Starting PAD training")
         print("=" * 60)
 
     epoch_pbar = tqdm(

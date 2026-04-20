@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import wandb
 import yaml
 from sklearn.metrics import roc_curve
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -16,12 +15,12 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
+import wandb
 from data import RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
 from loss import ArcFaceLoss
 from model import SwinTransformerTiny
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
-
 
 # ---------------------------------------------------------------------------
 # DDP Utilities
@@ -65,25 +64,26 @@ def _unwrap(module):
 
 
 @torch.no_grad()
-def compute_eer(
-    scores: np.ndarray,
-    labels: np.ndarray,
-) -> tuple[float, float]:
-    """Compute Equal Error Rate from similarity scores and binary labels."""
+def compute_eer(scores: np.ndarray, labels: np.ndarray):
     fmr, tar, thrs = roc_curve(labels, scores, pos_label=1)
     fnmr = 1.0 - tar
 
-    asc_idx = np.argsort(thrs)
-    thrs = thrs[asc_idx]
-    fmr = fmr[asc_idx]
-    fnmr = fnmr[asc_idx]
+    diff = fmr - fnmr
+    idx1 = np.where(diff >= 0)[0][0]
+    idx0 = idx1 - 1 if idx1 > 0 else idx1
 
-    diff = np.abs(fmr - fnmr)
-    eer_idx = int(np.argmin(diff))
-    eer = float((fmr[eer_idx] + fnmr[eer_idx]) / 2.0)
-    eer_thr = float(thrs[eer_idx])
+    x0, y0 = fmr[idx0], fnmr[idx0]
+    x1, y1 = fmr[idx1], fnmr[idx1]
 
-    return eer, eer_thr
+    if idx0 == idx1:
+        eer = (x0 + y0) / 2
+        eer_thr = thrs[idx0]
+    else:
+        t = (y0 - x0) / ((x1 - x0) - (y1 - y0))
+        eer = x0 + t * (x1 - x0)
+        eer_thr = thrs[idx0] + t * (thrs[idx1] - thrs[idx0])
+
+    return float(eer), float(eer_thr)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,6 @@ def get_embeddings(
     device: torch.device,
     epoch: int,
 ) -> torch.Tensor:
-    """Extract embeddings for all unique images across all GPUs."""
     model.eval()
 
     embed_dim = _unwrap(model).head.out_features
@@ -142,7 +141,6 @@ def evaluate(
     device: torch.device,
     epoch: int,
 ) -> tuple[float, float]:
-    """Evaluate recognition via cosine similarity and EER on validation pairs."""
     all_scores, all_labels = [], []
 
     pbar = tqdm(
@@ -368,9 +366,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(
-            project=wandb_cfg.get("project", "DualSwin-Recognition"), config=cfg
-        )
+        wandb.init(project=wandb_cfg.get("project", "DualSwin-Recognition"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -409,7 +405,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=train_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -417,7 +413,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=evaluation_cfg["batch_size"],
+        batch_size=evaluation_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -432,7 +428,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=training_cfg["batch_size"],
+        batch_size=training_cfg["recog_batch_size"],
         sampler=unique_val_sampler,
         num_workers=training_cfg["num_workers"],
         pin_memory=training_cfg["pin_memory"],
@@ -493,10 +489,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
 
         print("\n" + "=" * 60)
-        print(
-            f"Starting recognition training  (GPUs: {world_size}  |  "
-            f"effective batch: {training_cfg['batch_size'] * world_size})"
-        )
+        print("Starting recognition training")
         print("=" * 60)
 
     epoch_pbar = tqdm(
