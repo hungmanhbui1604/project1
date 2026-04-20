@@ -9,8 +9,8 @@ model:
   embed_dim: 2
 
 optimizer:
-  lr: 1.0e-3
-  weight_decay: 0.01
+  lr: 1.0e-4
+  weight_decay: 1.0e-5
 
 scheduler:
   warmup_epochs: 5
@@ -18,7 +18,7 @@ scheduler:
 
 training:
   epochs: 50
-  pad_batch_size: 64
+  pad_batch_size: 128
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 10
@@ -29,3 +29,6 @@ data:
 output:
   checkpoint_dir: "ckpts/pad/"
   best_model_name: "best_model.pth"
+
+evaluation:
+  pad_batch_size: 128

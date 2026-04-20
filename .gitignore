@@ -1,6 +1,7 @@
 __pycache__/
 ckpts/
 data/
+results/
 wandb/
 data.zip
 joint_config.yaml
