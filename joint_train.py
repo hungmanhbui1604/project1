@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from data import PADDataset, RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
 from loss import ArcFaceLoss
-from model import DualSwinTransformerTiny
+from model import DualViT
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -94,7 +94,7 @@ def compute_eer(
 
 @torch.no_grad()
 def get_embeddings(
-    model: DualSwinTransformerTiny,
+    model: DualViT,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -119,7 +119,7 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb_a, _ = model(imgs)
+            emb_a, _ = model(imgs, branch="a")
         emb_a = F.normalize(emb_a, dim=1).float()
 
         local_embeddings[idxs] = emb_a
@@ -202,7 +202,7 @@ def evaluate_pad(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits = model(images)
+            _, logits = model(images, branch="b")
             loss = F.cross_entropy(logits, labels)
 
         total_loss += loss.item()
@@ -248,7 +248,7 @@ def load_checkpoint(
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
-    best_metric = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if os.path.isfile(path):
         if is_main():
@@ -264,8 +264,8 @@ def load_checkpoint(
             scaler.load_state_dict(ckpt_dict["scaler"])
         if "epoch" in ckpt_dict:
             start_epoch = ckpt_dict["epoch"] + 1
-        if "best_metric" in ckpt_dict:
-            best_metric = ckpt_dict["best_metric"]
+        if "best_avg_ace_eer" in ckpt_dict:
+            best_avg_ace_eer = ckpt_dict["best_avg_ace_eer"]
 
         if is_main():
             print(f"=> Loaded checkpoint (epoch {start_epoch - 1})")
@@ -273,7 +273,7 @@ def load_checkpoint(
         if is_main():
             print(f"=> No checkpoint found at '{path}'")
 
-    return start_epoch, best_metric
+    return start_epoch, best_avg_ace_eer
 
 
 def save_checkpoint(
@@ -284,7 +284,7 @@ def save_checkpoint(
     optimizer: AdamW,
     scheduler: LambdaLR,
     scaler: torch.amp.GradScaler,
-    best_metric: float,
+    best_avg_ace_eer: float,
 ) -> None:
     torch.save(
         {
@@ -294,7 +294,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
-            "best_metric": best_metric,
+            "best_avg_ace_eer": best_avg_ace_eer,
         },
         path,
     )
@@ -304,7 +304,7 @@ def save_checkpoint(
         artifact = wandb.Artifact(
             name=f"checkpoint-epoch{epoch:03d}",
             type="checkpoint",
-            metadata={"epoch": epoch, "best_metric": best_metric},
+            metadata={"epoch": epoch, "best_avg_ace_eer": best_avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
@@ -475,7 +475,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
         wandb.init(
-            project=wandb_cfg.get("project", "DualSwin-Joint"), config=cfg
+            project=wandb_cfg.get("project", "DualViT-Joint"), config=cfg
         )
 
     # ── Transforms ────────────────────────────────────────────────────────
@@ -583,20 +583,27 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = DualSwinTransformerTiny(
-        embed_dim_a=model_cfg["embed_dim_a"],
-        embed_dim_b=model_cfg["embed_dim_b"],
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
     ).to(device)
+    if model_cfg.get("ckpt_path"):
+        model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
+        tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] DualSwinTransformerTiny  ({n_params:.2f}M params)")
+        print(f"[model] DualViT  ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = recog_train_dataset.n_ids
     arcface_loss = ArcFaceLoss(
-        embed_dim=model_cfg["embed_dim_a"],
+        embed_dim=model_cfg["branch_a_num_classes"],
         num_classes=n_ids,
         margin=loss_cfg["margin"],
         scale=loss_cfg["scale"],
@@ -624,10 +631,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     # ── Training loop ─────────────────────────────────────────────────────
     start_epoch = 1
-    best_metric = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if checkpoint is not None:
-        start_epoch, best_metric = load_checkpoint(
+        start_epoch, best_avg_ace_eer = load_checkpoint(
             checkpoint, model, arcface_loss, optimizer, scheduler, scaler
         )
 
@@ -740,8 +747,8 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 history["val_ace"].append(ace)
                 history["val_avg"].append(avg_ace_eer)
 
-            if avg_ace_eer < best_metric:
-                best_metric = avg_ace_eer
+            if avg_ace_eer < best_avg_ace_eer:
+                best_avg_ace_eer = avg_ace_eer
                 save_best(
                     output_cfg["checkpoint_dir"],
                     output_cfg["best_model_name"],
@@ -763,14 +770,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    best_metric,
+                    best_avg_ace_eer,
                 )
 
         dist.barrier()
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val avg(ACE, EER): {best_metric:.4f}")
+        print(f"Training complete. Best val avg(ACE, EER): {best_avg_ace_eer:.4f}")
         print("=" * 60)
 
         if wandb.run is not None:
@@ -817,7 +824,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DualSwin Joint Training (Recog + PAD)")
+    parser = argparse.ArgumentParser(description="DualViT Joint Training (Recognition + PAD)")
     parser.add_argument(
         "--config",
         type=str,

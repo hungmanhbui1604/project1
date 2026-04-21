@@ -7,7 +7,6 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
@@ -16,11 +15,11 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
+import wandb
 from data import PADDataset
-from model import SwinTransformerTiny
+from model import DualViT
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
-
 
 # ---------------------------------------------------------------------------
 # DDP Utilities
@@ -92,7 +91,7 @@ def evaluate(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            logits = model(images)
+            _, logits = model(images, branch="b")
             loss = F.cross_entropy(logits, labels)
 
         total_loss += loss.item()
@@ -262,7 +261,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type="cuda"):
-            logits = model(images)
+            _, logits = model(images, branch="b")
             loss = F.cross_entropy(logits, labels)
 
         scaler.scale(loss).backward()
@@ -312,9 +311,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(
-            project=wandb_cfg.get("project", "DualSwin-PAD"), config=cfg
-        )
+        wandb.init(project=wandb_cfg.get("project", "DualViT-PAD"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -359,14 +356,29 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = SwinTransformerTiny(
-        embed_dim=model_cfg["embed_dim"],
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
     ).to(device)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    if model_cfg.get("ckpt_path"):
+        model.load_state_dict(
+            torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"]
+        )
+        tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
+    model = DDP(
+        model,
+        device_ids=[local_rank],
+        output_device=local_rank,
+        find_unused_parameters=True,
+    )
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] SwinTransformerTiny  ({n_params:.2f}M params)")
+        print(f"[model] DualViT  ({n_params:.2f}M params)")
 
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
     optimizer = AdamW(
@@ -515,7 +527,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SwinT PAD Training")
+    parser = argparse.ArgumentParser(description="DualViT PAD Training")
     parser.add_argument(
         "--config",
         type=str,

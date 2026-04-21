@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data import RecogEvaluationDataset, UniqueImageDataset
-from model import DualSwinTransformerTiny, SwinTransformerTiny
+from model import DualViT
 from transforms import get_transforms
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,6 @@ def collect_scores(
     loader: DataLoader,
     unique_loader: DataLoader,
     device: torch.device,
-    is_dual: bool,
     embed_dim: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
@@ -109,11 +108,7 @@ def collect_scores(
     for idxs, imgs in tqdm(unique_loader, desc="Extracting embeddings", unit="batch"):
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            outputs = model(imgs)
-            if is_dual:
-                emb = outputs[0]
-            else:
-                emb = outputs
+            emb, _ = model(imgs, branch="a")
         emb = F.normalize(emb, dim=1).float()
         embeddings[idxs] = emb
 
@@ -275,7 +270,7 @@ def plot_score_dist(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SwinT Recognition Evaluation")
+    parser = argparse.ArgumentParser(description="DualViT Recognition Evaluation")
     parser.add_argument(
         "--config",
         required=True,
@@ -356,21 +351,16 @@ def main() -> None:
     )
 
     # ── Model ────────────────────────────────────────────────────────────
-    if "embed_dim_a" in model_cfg:
-        model = DualSwinTransformerTiny(
-            embed_dim_a=model_cfg["embed_dim_a"],
-            embed_dim_b=model_cfg["embed_dim_b"],
-        ).to(device)
-        is_dual = True
-        embed_dim = model_cfg["embed_dim_a"]
-        print("[model] DualSwinTransformerTiny")
-    else:
-        model = SwinTransformerTiny(
-            embed_dim=model_cfg["embed_dim"],
-        ).to(device)
-        is_dual = False
-        embed_dim = model_cfg["embed_dim"]
-        print("[model] SwinTransformerTiny")
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
+    ).to(device)
+    embed_dim = model_cfg["branch_a_num_classes"]
+    print(f"[model] DualViT ({model_cfg['model_name']})")
 
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location="cpu")
@@ -383,7 +373,7 @@ def main() -> None:
     print("\nEvaluating on recognition test set...")
 
     scores, labels = collect_scores(
-        model, loader, unique_loader, device, is_dual, embed_dim
+        model, loader, unique_loader, device, embed_dim
     )
     metrics = compute_recog_metrics(scores, labels)
 

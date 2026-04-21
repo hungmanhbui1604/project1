@@ -3,11 +3,17 @@ general:
 
 wandb:
   api_key: null
-  project: "DualSwin-Joint"
+  project: "DualViT-Joint"
 
 model:
-  embed_dim_a: 512   # recognition branch
-  embed_dim_b: 2     # PAD branch (live/spoof)
+model:
+  model_name: "vit_small_patch16_224"
+  pretrained: false
+  branch_a_num_classes: 128
+  branch_b_num_classes: 2
+  head_hidden_dim: 256
+  head_drop_rate: 0.5
+  ckpt_path: "ckpts/recog/best_model.pth"
 
 loss:
   margin: 0.5
@@ -20,11 +26,11 @@ optimizer:
   weight_decay: 1.0e-5
 
 scheduler:
-  warmup_epochs: 5
+  warmup_epochs: 0
   min_lr: 1.0e-5
 
 training:
-  epochs: 100
+  epochs: 60
   recog_batch_size: 256
   pad_batch_size: 128
   num_workers: 8

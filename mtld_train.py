@@ -24,7 +24,7 @@ from data import (
     UniqueImageDataset,
 )
 from loss import ArcFaceLoss
-from model import DualSwinTransformerTiny, SwinTransformerTiny
+from model import DualViT
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -65,57 +65,6 @@ def _unwrap(module):
 
 
 # ---------------------------------------------------------------------------
-# Teacher Feature Extraction
-# ---------------------------------------------------------------------------
-
-
-@torch.no_grad()
-def teacher_forward(
-    model: SwinTransformerTiny, x: torch.Tensor
-) -> dict[str, torch.Tensor]:
-    feats = {}
-    x, H, W = model.patch_embed(x)
-    x, H, W = model.stages[0](x, H, W)
-    x, H, W = model.stages[1](x, H, W)
-    feats["stage2"] = x
-    x, H, W = model.stages[2](x, H, W)
-    feats["stage3"] = x
-    x, H, W = model.stages[3](x, H, W)
-    feats["stage4"] = x
-    x = model.norm(x)
-    x = model.avgpool(x.transpose(1, 2)).flatten(1)
-    x = model.head(x)
-    feats["output"] = x
-    return feats
-
-
-# ---------------------------------------------------------------------------
-# Student Feature-Hook Manager
-# ---------------------------------------------------------------------------
-
-
-class FeatureHooks:
-    def __init__(self):
-        self.features: dict[str, torch.Tensor] = {}
-        self._hooks: list[torch.utils.hooks.RemovableHook] = []
-
-    def register(self, module: nn.Module, name: str) -> None:
-        def hook(mod, inp, out):
-            # SwinTransformerStage.forward returns (x, H, W)
-            self.features[name] = out[0] if isinstance(out, tuple) else out
-
-        self._hooks.append(module.register_forward_hook(hook))
-
-    def clear(self) -> None:
-        self.features.clear()
-
-    def remove_all(self) -> None:
-        for h in self._hooks:
-            h.remove()
-        self._hooks.clear()
-
-
-# ---------------------------------------------------------------------------
 # Distillation Losses
 # ---------------------------------------------------------------------------
 
@@ -140,73 +89,43 @@ def feature_distillation_loss(
     return F.mse_loss(s, t)
 
 
-def embedding_distillation_loss(
-    student_emb: torch.Tensor, teacher_emb: torch.Tensor
-) -> torch.Tensor:
-    """Cosine-distance loss: mean(1 − cos_sim) over the batch."""
-    s = F.normalize(student_emb.float(), dim=-1)
-    t = F.normalize(teacher_emb.float(), dim=-1)
-    return (1.0 - (s * t).sum(dim=-1)).mean()
-
-
-def logit_distillation_loss(
-    student_logits: torch.Tensor,
-    teacher_logits: torch.Tensor,
-    temperature: float = 4.0,
-) -> torch.Tensor:
-    """Hinton-style KL-divergence loss with temperature scaling."""
-    s = F.log_softmax(student_logits.float() / temperature, dim=-1)
-    t = F.softmax(teacher_logits.float() / temperature, dim=-1)
-    return F.kl_div(s, t, reduction="batchmean") * (temperature**2)
-
-
 def compute_distillation_losses(
-    student_hooks: dict[str, torch.Tensor],
-    student_emb_a: torch.Tensor,
-    student_emb_b: torch.Tensor,
+    student_feats: dict[str, torch.Tensor],
     recog_t_feats: dict[str, torch.Tensor],
     pad_t_feats: dict[str, torch.Tensor],
-    temperature: float = 4.0,
-) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+) -> tuple[torch.Tensor, dict[str, float]]:
     breakdown = {}
 
-    # ── Shared stage 2: distil from both teachers (averaged) ──────────
-    l_s2_recog = feature_distillation_loss(
-        student_hooks["stage2"], recog_t_feats["stage2"]
+    # ── Layer 4: distil from both teachers (averaged) ──────────
+    l_layer4_recog = feature_distillation_loss(
+        student_feats["layer4"], recog_t_feats["layer4"]
     )
-    l_s2_pad = feature_distillation_loss(student_hooks["stage2"], pad_t_feats["stage2"])
-    l_stage2 = 0.5 * (l_s2_recog + l_s2_pad)
-    breakdown["distill/stage2"] = l_stage2.item()
-
-    # ── Branch A intermediates ← recog teacher ────────────────────────
-    l_a_s3 = feature_distillation_loss(
-        student_hooks["a_stage3"], recog_t_feats["stage3"]
+    l_layer4_pad = feature_distillation_loss(
+        student_feats["layer4"], pad_t_feats["layer4"]
     )
-    l_a_s4 = feature_distillation_loss(
-        student_hooks["a_stage4"], recog_t_feats["stage4"]
+    l_layer4 = 0.5 * (l_layer4_recog + l_layer4_pad)
+    breakdown["distill/layer4"] = l_layer4.item()
+
+    # ── Layer 8 ────────────────────────────────────────────────
+    l_a_layer8 = feature_distillation_loss(
+        student_feats["a_layer8"], recog_t_feats["a_layer8"]
     )
-    breakdown["distill/a_stage3"] = l_a_s3.item()
-    breakdown["distill/a_stage4"] = l_a_s4.item()
+    l_b_layer8 = feature_distillation_loss(
+        student_feats["b_layer8"], pad_t_feats["b_layer8"]
+    )
+    breakdown["distill/a_layer8"] = l_a_layer8.item()
+    breakdown["distill/b_layer8"] = l_b_layer8.item()
 
-    # ── Branch B intermediates ← PAD teacher ──────────────────────────
-    l_b_s3 = feature_distillation_loss(student_hooks["b_stage3"], pad_t_feats["stage3"])
-    l_b_s4 = feature_distillation_loss(student_hooks["b_stage4"], pad_t_feats["stage4"])
-    breakdown["distill/b_stage3"] = l_b_s3.item()
-    breakdown["distill/b_stage4"] = l_b_s4.item()
+    # ── Layer 12 ───────────────────────────────────────────────
+    l_a_layer12 = feature_distillation_loss(
+        student_feats["a_layer12"], recog_t_feats["a_layer12"]
+    )
+    breakdown["distill/a_layer12"] = l_a_layer12.item()
 
-    # ── Output distillation ───────────────────────────────────────────
-    l_emb_a = embedding_distillation_loss(student_emb_a, recog_t_feats["output"])
-    l_emb_b = logit_distillation_loss(student_emb_b, pad_t_feats["output"], temperature)
-    breakdown["distill/emb_a"] = l_emb_a.item()
-    breakdown["distill/emb_b"] = l_emb_b.item()
+    distill_loss = l_layer4 + l_a_layer8 + l_b_layer8 + l_a_layer12
+    breakdown["distill/total"] = distill_loss.item()
 
-    inter_loss = l_stage2 + l_a_s3 + l_a_s4 + l_b_s3 + l_b_s4
-    output_loss = l_emb_a + l_emb_b
-
-    breakdown["distill/inter_total"] = inter_loss.item()
-    breakdown["distill/output_total"] = output_loss.item()
-
-    return inter_loss, output_loss, breakdown
+    return distill_loss, breakdown
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +162,7 @@ def compute_eer(
 
 @torch.no_grad()
 def get_embeddings(
-    model: DualSwinTransformerTiny,
+    model: DualViT,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -268,7 +187,7 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb_a, _ = model(imgs)
+            emb_a, _ = model(imgs, branch="a")
         emb_a = F.normalize(emb_a, dim=1).float()
 
         local_embeddings[idxs] = emb_a
@@ -351,7 +270,7 @@ def evaluate_pad(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits = model(images)
+            _, logits = model(images, branch="b")
             loss = F.cross_entropy(logits, labels)
 
         total_loss += loss.item()
@@ -389,15 +308,29 @@ def evaluate_pad(
 
 
 def load_teacher(
-    checkpoint_path: str, embed_dim: int, device: torch.device
-) -> SwinTransformerTiny:
+    checkpoint_path: str, model_cfg: dict, device: torch.device, branch: str
+) -> DualViT:
     """
-    Load a pre-trained SwinTransformerTiny teacher from checkpoint.
-
-    The checkpoint is expected to contain a 'model' key with the state dict
-    (as saved by recog_train.py / pad_train.py).
+    Load a pre-trained DualViT teacher from checkpoint.
     """
-    model = SwinTransformerTiny(embed_dim=embed_dim).to(device)
+    if branch == "a":
+        model = DualViT(
+            model_name=model_cfg["model_name"],
+            pretrained=model_cfg["pretrained"],
+            branch_a_num_classes=model_cfg["branch_a_num_classes"],
+            branch_b_num_classes=model_cfg["branch_b_num_classes"],
+            head_hidden_dim=model_cfg["head_hidden_dim"],
+            head_drop_rate=model_cfg["head_drop_rate"],
+        ).to(device)
+    else:
+        model = DualViT(
+            model_name=model_cfg["model_name"],
+            pretrained=model_cfg["pretrained"],
+            branch_a_num_classes=model_cfg["branch_a_num_classes"],
+            branch_b_num_classes=model_cfg["branch_b_num_classes"],
+            head_hidden_dim=model_cfg["head_hidden_dim"],
+            head_drop_rate=model_cfg["head_drop_rate"],
+        ).to(device)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.eval()
@@ -420,7 +353,7 @@ def load_checkpoint(
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
-    best_metric = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if os.path.isfile(path):
         if is_main():
@@ -436,8 +369,8 @@ def load_checkpoint(
             scaler.load_state_dict(ckpt_dict["scaler"])
         if "epoch" in ckpt_dict:
             start_epoch = ckpt_dict["epoch"] + 1
-        if "best_metric" in ckpt_dict:
-            best_metric = ckpt_dict["best_metric"]
+        if "best_avg_ace_eer" in ckpt_dict:
+            best_avg_ace_eer = ckpt_dict["best_avg_ace_eer"]
 
         if is_main():
             print(f"=> Loaded checkpoint (epoch {start_epoch - 1})")
@@ -445,7 +378,7 @@ def load_checkpoint(
         if is_main():
             print(f"=> No checkpoint found at '{path}'")
 
-    return start_epoch, best_metric
+    return start_epoch, best_avg_ace_eer
 
 
 def save_checkpoint(
@@ -456,7 +389,7 @@ def save_checkpoint(
     optimizer: AdamW,
     scheduler: LambdaLR,
     scaler: torch.amp.GradScaler,
-    best_metric: float,
+    best_avg_ace_eer: float,
 ) -> None:
     torch.save(
         {
@@ -466,7 +399,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
-            "best_metric": best_metric,
+            "best_avg_ace_eer": best_avg_ace_eer,
         },
         path,
     )
@@ -476,7 +409,7 @@ def save_checkpoint(
         artifact = wandb.Artifact(
             name=f"checkpoint-epoch{epoch:03d}",
             type="checkpoint",
-            metadata={"epoch": epoch, "best_metric": best_metric},
+            metadata={"epoch": epoch, "best_avg_ace_eer": best_avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
@@ -525,9 +458,8 @@ def save_best(
 def train_one_epoch(
     model: DDP,
     arcface_loss: DDP,
-    recog_teacher: SwinTransformerTiny,
-    pad_teacher: SwinTransformerTiny,
-    hooks: FeatureHooks,
+    recog_teacher: DualViT,
+    pad_teacher: DualViT,
     recog_loader: DataLoader,
     recog_sampler: DistributedSampler,
     pad_loader: DataLoader,
@@ -540,9 +472,7 @@ def train_one_epoch(
     steps_per_epoch: int,
     recog_weight: float = 1.0,
     pad_weight: float = 1.0,
-    inter_distill_weight: float = 0.5,
-    output_distill_weight: float = 1.0,
-    temperature: float = 4.0,
+    distill_weight: float = 1.0,
 ) -> dict[str, float]:
     model.train()
     arcface_loss.train()
@@ -553,8 +483,7 @@ def train_one_epoch(
     total_loss = 0.0
     total_recog_loss = 0.0
     total_pad_loss = 0.0
-    total_inter_distill = 0.0
-    total_output_distill = 0.0
+    total_distill_loss = 0.0
 
     all_params = list(model.parameters()) + list(arcface_loss.parameters())
 
@@ -581,13 +510,14 @@ def train_one_epoch(
 
         # ── Teacher forward (frozen, no grad, autocast for speed) ─────
         with torch.no_grad(), torch.autocast(device_type="cuda"):
-            recog_t_feats = teacher_forward(recog_teacher, combined)
-            pad_t_feats = teacher_forward(pad_teacher, combined)
+            _, _, recog_t_feats = recog_teacher(
+                combined, return_features=True, branch="a"
+            )
+            _, _, pad_t_feats = pad_teacher(combined, return_features=True, branch="b")
 
-        # ── Student forward (DDP, hooks capture intermediates) ────────
-        hooks.clear()
+        # ── Student forward ────────
         with torch.autocast(device_type="cuda"):
-            emb_a, emb_b = model(combined)
+            emb_a, emb_b, student_feats = model(combined, return_features=True)
 
             # Task losses (split outputs by task)
             recog_emb = emb_a[:n_recog]
@@ -596,20 +526,16 @@ def train_one_epoch(
             pad_loss = F.cross_entropy(pad_logits, pad_labels)
 
             # Distillation losses (computed on full combined batch)
-            inter_loss, output_loss, distill_info = compute_distillation_losses(
-                hooks.features,
-                emb_a,
-                emb_b,
+            distill_loss, distill_info = compute_distillation_losses(
+                student_feats,
                 recog_t_feats,
                 pad_t_feats,
-                temperature,
             )
 
             loss = (
                 recog_weight * recog_loss
                 + pad_weight * pad_loss
-                + inter_distill_weight * inter_loss
-                + output_distill_weight * output_loss
+                + distill_weight * distill_loss
             )
 
         scaler.scale(loss).backward()
@@ -627,15 +553,14 @@ def train_one_epoch(
         total_loss += loss.item()
         total_recog_loss += recog_loss.item()
         total_pad_loss += pad_loss.item()
-        total_inter_distill += inter_loss.item()
-        total_output_distill += output_loss.item()
+        total_distill_loss += distill_loss.item()
 
         lr_val = scheduler.get_last_lr()[0]
         pbar.set_postfix(
             total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
-            dist=f"{(inter_loss.item() + output_loss.item()):.4f}",
+            dist=f"{distill_loss.item():.4f}",
             lr=f"{lr_val:.2e}",
         )
 
@@ -643,8 +568,7 @@ def train_one_epoch(
         "train/loss": total_loss / steps_per_epoch,
         "train/recog_loss": total_recog_loss / steps_per_epoch,
         "train/pad_loss": total_pad_loss / steps_per_epoch,
-        "train/inter_distill_loss": total_inter_distill / steps_per_epoch,
-        "train/output_distill_loss": total_output_distill / steps_per_epoch,
+        "train/distill_loss": total_distill_loss / steps_per_epoch,
     }
 
 
@@ -678,7 +602,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "DualSwin-MTLD"), config=cfg)
+        wandb.init(project=wandb_cfg.get("project", "DualViT-MTLD"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -791,16 +715,18 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         )
     recog_teacher = load_teacher(
         teacher_cfg["recog_checkpoint"],
-        embed_dim=teacher_cfg["recog_embed_dim"],
+        model_cfg=model_cfg,
         device=device,
+        branch="a",
     )
 
     if is_main():
         print(f"[teacher] Loading PAD teacher from {teacher_cfg['pad_checkpoint']}")
     pad_teacher = load_teacher(
         teacher_cfg["pad_checkpoint"],
-        embed_dim=teacher_cfg["pad_embed_dim"],
+        model_cfg=model_cfg,
         device=device,
+        branch="b",
     )
 
     if is_main():
@@ -810,29 +736,27 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"[teacher] PAD teacher:   {n_pad_t:.2f}M params (frozen)")
 
     # ── Student Model ─────────────────────────────────────────────────────
-    model = DualSwinTransformerTiny(
-        embed_dim_a=model_cfg["embed_dim_a"],
-        embed_dim_b=model_cfg["embed_dim_b"],
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
     ).to(device)
+    if model_cfg.get("ckpt_path"):
+        model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
+        tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[student] DualSwinTransformerTiny  ({n_params:.2f}M params)")
-
-    # ── Register hooks on student for intermediate feature capture ────────
-    student = _unwrap(model)
-    hooks = FeatureHooks()
-    hooks.register(student.shared_stage2, "stage2")
-    hooks.register(student.branch_a_stage3, "a_stage3")
-    hooks.register(student.branch_a_stage4, "a_stage4")
-    hooks.register(student.branch_b_stage3, "b_stage3")
-    hooks.register(student.branch_b_stage4, "b_stage4")
+        print(f"[student] DualViT  ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = recog_train_dataset.n_ids
     arcface_loss = ArcFaceLoss(
-        embed_dim=model_cfg["embed_dim_a"],
+        embed_dim=model_cfg["branch_a_num_classes"],
         num_classes=n_ids,
         margin=loss_cfg["margin"],
         scale=loss_cfg["scale"],
@@ -858,26 +782,22 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     scaler = torch.amp.GradScaler("cuda")
 
-    # ── Loss weights ──────────────────────────────────────────────────────
     recog_weight = loss_cfg.get("recog_weight", 1.0)
     pad_weight = loss_cfg.get("pad_weight", 1.0)
-    inter_distill_weight = loss_cfg.get("inter_distill_weight", 0.5)
-    output_distill_weight = loss_cfg.get("output_distill_weight", 1.0)
-    temperature = loss_cfg.get("temperature", 4.0)
+    distill_weight = loss_cfg.get("distill_weight", 1.0)
 
     if is_main():
         print(
             f"\nLoss weights: recog={recog_weight}, pad={pad_weight}, "
-            f"inter_distill={inter_distill_weight}, output_distill={output_distill_weight}, "
-            f"temperature={temperature}"
+            f"distill={distill_weight}"
         )
 
     # ── Training loop ─────────────────────────────────────────────────────
     start_epoch = 1
-    best_metric = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if checkpoint is not None:
-        start_epoch, best_metric = load_checkpoint(
+        start_epoch, best_avg_ace_eer = load_checkpoint(
             checkpoint, model, arcface_loss, optimizer, scheduler, scaler
         )
 
@@ -888,8 +808,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 "loss": [],
                 "recog_loss": [],
                 "pad_loss": [],
-                "inter_distill": [],
-                "output_distill": [],
+                "distill_loss": [],
                 "val_eer": [],
                 "val_ace": [],
                 "val_avg": [],
@@ -914,7 +833,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             arcface_loss,
             recog_teacher,
             pad_teacher,
-            hooks,
             recog_train_loader,
             recog_train_sampler,
             pad_train_loader,
@@ -927,9 +845,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             steps_per_epoch,
             recog_weight=recog_weight,
             pad_weight=pad_weight,
-            inter_distill_weight=inter_distill_weight,
-            output_distill_weight=output_distill_weight,
-            temperature=temperature,
+            distill_weight=distill_weight,
         )
 
         dist.barrier()
@@ -970,8 +886,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 f"total: {train_metrics['train/loss']:.4f} | "
                 f"recog: {train_metrics['train/recog_loss']:.4f} | "
                 f"pad: {train_metrics['train/pad_loss']:.4f} | "
-                f"inter_d: {train_metrics['train/inter_distill_loss']:.4f} | "
-                f"out_d: {train_metrics['train/output_distill_loss']:.4f} | "
+                f"distill: {train_metrics['train/distill_loss']:.4f} | "
                 f"EER: {eer:.4f} (thr={thr:.4f}) | "
                 f"ACE: {ace:.4f} "
                 f"(APCER={pad_metrics['val/apcer']:.4f}, BPCER={pad_metrics['val/bpcer']:.4f}) | "
@@ -991,18 +906,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 history["loss"].append(train_metrics["train/loss"])
                 history["recog_loss"].append(train_metrics["train/recog_loss"])
                 history["pad_loss"].append(train_metrics["train/pad_loss"])
-                history["inter_distill"].append(
-                    train_metrics["train/inter_distill_loss"]
-                )
-                history["output_distill"].append(
-                    train_metrics["train/output_distill_loss"]
-                )
+                history["distill_loss"].append(train_metrics["train/distill_loss"])
                 history["val_eer"].append(eer)
                 history["val_ace"].append(ace)
                 history["val_avg"].append(avg_ace_eer)
 
-            if avg_ace_eer < best_metric:
-                best_metric = avg_ace_eer
+            if avg_ace_eer < best_avg_ace_eer:
+                best_avg_ace_eer = avg_ace_eer
                 save_best(
                     output_cfg["checkpoint_dir"],
                     output_cfg["best_model_name"],
@@ -1024,17 +934,16 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    best_metric,
+                    best_avg_ace_eer,
                 )
 
         dist.barrier()
 
     # ── Cleanup ───────────────────────────────────────────────────────────
-    hooks.remove_all()
 
     if is_main():
         print("=" * 70)
-        print(f"Training complete. Best val avg(ACE, EER): {best_metric:.4f}")
+        print(f"Training complete. Best val avg(ACE, EER): {best_avg_ace_eer:.4f}")
         print("=" * 70)
 
         if wandb.run is not None:
@@ -1057,10 +966,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
             # Distillation losses
             axes[1].plot(
-                history["epoch"], history["inter_distill"], "c-", label="Intermediate"
-            )
-            axes[1].plot(
-                history["epoch"], history["output_distill"], "m-", label="Output"
+                history["epoch"], history["distill_loss"], "c-", label="Distillation"
             )
             axes[1].set_xlabel("Epoch")
             axes[1].set_ylabel("Loss")

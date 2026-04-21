@@ -17,7 +17,7 @@ def cosine_warmup_scheduler(
                 return 0.0
 
             if step < warmup_iters:
-                return step / max(warmup_iters, 1)
+                return (step + 1) / max(warmup_iters, 1)
 
             progress = (step - warmup_iters) / max(total_iters - warmup_iters, 1)
             progress = min(progress, 1.0)

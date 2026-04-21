@@ -18,7 +18,7 @@ from tqdm import tqdm
 import wandb
 from data import RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
 from loss import ArcFaceLoss
-from model import SwinTransformerTiny
+from model import DualViT
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -93,14 +93,14 @@ def compute_eer(scores: np.ndarray, labels: np.ndarray):
 
 @torch.no_grad()
 def get_embeddings(
-    model: SwinTransformerTiny,
+    model: DualViT,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
 ) -> torch.Tensor:
     model.eval()
 
-    embed_dim = _unwrap(model).head.out_features
+    embed_dim = _unwrap(model).branch_a_head.out_features
     n_unique_images = len(val_unique_loader.dataset)
 
     local_embeddings = torch.zeros((n_unique_images, embed_dim), device=device)
@@ -117,7 +117,7 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb = model(imgs)
+            emb, _ = model(imgs, branch="a")
         emb = F.normalize(emb, dim=1).float()
 
         local_embeddings[idxs] = emb
@@ -314,7 +314,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type="cuda"):
-            embeddings = model(images)
+            embeddings, _ = model(images, branch="a")
             loss, _ = arcface_loss(embeddings, labels)
 
         scaler.scale(loss).backward()
@@ -366,7 +366,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "DualSwin-Recognition"), config=cfg)
+        wandb.init(project=wandb_cfg.get("project", "DualViT-Recognition"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -435,20 +435,27 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = SwinTransformerTiny(
-        embed_dim=model_cfg["embed_dim"],
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
     ).to(device)
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    if model_cfg.get("ckpt_path"):
+        model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
+        tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] SwinTransformerTiny  ({n_params:.2f}M params)")
+        print(f"[model] DualViT  ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = train_dataset.n_ids
-    embed_dim_a = model_cfg["embed_dim"]
     arcface_loss = ArcFaceLoss(
-        embed_dim=embed_dim_a,
+        embed_dim=model_cfg["branch_a_num_classes"],
         num_classes=n_ids,
         margin=loss_cfg["margin"],
         scale=loss_cfg["scale"],
@@ -607,7 +614,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SwinT Recognition Training")
+    parser = argparse.ArgumentParser(description="DualViT Recognition Training")
     parser.add_argument(
         "--config",
         type=str,

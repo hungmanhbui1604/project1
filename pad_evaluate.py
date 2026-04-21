@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data import PADDataset
-from model import DualSwinTransformerTiny, SwinTransformerTiny
+from model import DualViT
 from transforms import get_transforms
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,6 @@ def collect_preds(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
-    is_dual: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
 
@@ -101,11 +100,7 @@ def collect_preds(
         images = images.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            outputs = model(images)
-            if is_dual:
-                logits = outputs[1]
-            else:
-                logits = outputs
+            _, logits = model(images, branch="b")
 
         preds = logits.argmax(dim=1).cpu().numpy()
 
@@ -153,7 +148,7 @@ def compute_pad_metrics(preds: np.ndarray, labels: np.ndarray) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SwinT PAD Evaluation")
+    parser = argparse.ArgumentParser(description="DualViT PAD Evaluation")
     parser.add_argument(
         "--config",
         required=True,
@@ -209,19 +204,15 @@ def main() -> None:
     )
 
     # ── Model ────────────────────────────────────────────────────────────
-    if "embed_dim_a" in model_cfg:
-        model = DualSwinTransformerTiny(
-            embed_dim_a=model_cfg["embed_dim_a"],
-            embed_dim_b=model_cfg["embed_dim_b"],
-        ).to(device)
-        is_dual = True
-        print("[model] DualSwinTransformerTiny")
-    else:
-        model = SwinTransformerTiny(
-            embed_dim=model_cfg["embed_dim"],
-        ).to(device)
-        is_dual = False
-        print("[model] SwinTransformerTiny")
+    model = DualViT(
+        model_name=model_cfg["model_name"],
+        pretrained=model_cfg["pretrained"],
+        branch_a_num_classes=model_cfg["branch_a_num_classes"],
+        branch_b_num_classes=model_cfg["branch_b_num_classes"],
+        head_hidden_dim=model_cfg["head_hidden_dim"],
+        head_drop_rate=model_cfg["head_drop_rate"],
+    ).to(device)
+    print(f"[model] DualViT ({model_cfg['model_name']})")
 
     print(f"Loading checkpoint: {args.checkpoint_path}")
     ckpt = torch.load(args.checkpoint_path, map_location="cpu")
@@ -232,7 +223,7 @@ def main() -> None:
 
     # ── Evaluate ─────────────────────────────────────────────────────────
     print("\nEvaluating on PAD test set...")
-    preds, labels = collect_preds(model, loader, device, is_dual)
+    preds, labels = collect_preds(model, loader, device)
     metrics = compute_pad_metrics(preds, labels)
 
     # ── Report ───────────────────────────────────────────────────────────

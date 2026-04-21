@@ -3,28 +3,31 @@ general:
 
 wandb:
   api_key: null
-  project: "DualSwin-MTLD"
+  project: "DualViT-MTLD"
 
 data:
-  recog_split_path: data/recog_splits.json
-  pad_split_path: data/pad_splits.json
+  recog_split_path: "data/recog_splits.json"
+  pad_split_path: "data/pad_splits.json"
   n_genuine_impressions: 32
   n_impostor_impressions: 1
   impostor_mode: all
   n_impostor_subset: null
 
 model:
-  embed_dim_a: 512   # recognition branch output dim
-  embed_dim_b: 2     # PAD branch output dim (live / spoof)
+  model_name: "vit_small_patch16_224"
+  pretrained: false
+  branch_a_num_classes: 128
+  branch_b_num_classes: 2
+  head_hidden_dim: 256
+  head_drop_rate: 0.5
+  ckpt_path: "ckpts/recog/best_model.pth"
 
 teachers:
   recog_checkpoint: ckpts/recog/best_model.pth
-  recog_embed_dim: 512
   pad_checkpoint: ckpts/pad/best_model.pth
-  pad_embed_dim: 2
 
 training:
-  epochs: 100
+  epochs: 30
   recog_batch_size: 256
   pad_batch_size: 128
   num_workers: 8
@@ -35,10 +38,8 @@ loss:
   # Task loss weights
   recog_weight: 1.0
   pad_weight: 1.0
-  # Distillation weights
-  output_distill_weight: 1.0
-  inter_distill_weight: 0.5
-  temperature: 4.0
+  # Distillation weight
+  distill_weight: 1.0
   # ArcFace params
   margin: 0.5
   scale: 32.0
@@ -48,7 +49,7 @@ optimizer:
   weight_decay: 1.0e-5
 
 scheduler:
-  warmup_epochs: 5
+  warmup_epochs: 0
   min_lr: 1.0e-5
 
 output:

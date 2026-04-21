@@ -3,10 +3,16 @@ general:
 
 wandb:
   api_key: null
-  project: "SwinT-Recognition"
+  project: "DualViT-Recognition"
 
 model:
-  embed_dim: 512
+  model_name: "vit_small_patch16_224"
+  pretrained: true
+  branch_a_num_classes: 128
+  branch_b_num_classes: 2
+  head_hidden_dim: 256
+  head_drop_rate: 0.5
+  ckpt_path: null
 
 loss:
   margin: 0.5
@@ -17,11 +23,11 @@ optimizer:
   weight_decay: 1.0e-5
 
 scheduler:
-  warmup_epochs: 5
+  warmup_epochs: 0
   min_lr: 1.0e-5
 
 training:
-  epochs: 100
+  epochs: 60
   recog_batch_size: 256
   num_workers: 8
   pin_memory: true
