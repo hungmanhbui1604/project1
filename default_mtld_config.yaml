@@ -5,14 +5,6 @@ wandb:
   api_key: null
   project: "DualViT-MTLD"
 
-data:
-  recog_split_path: "data/recog_splits.json"
-  pad_split_path: "data/pad_splits.json"
-  n_genuine_impressions: 32
-  n_impostor_impressions: 1
-  impostor_mode: all
-  n_impostor_subset: null
-
 model:
   model_name: "dualvit"
   pretrained: false
@@ -26,14 +18,6 @@ teachers:
   recog_checkpoint: ckpts/recog/best_model.pth
   pad_checkpoint: ckpts/pad/best_model.pth
 
-training:
-  epochs: 50
-  recog_batch_size: 256
-  pad_batch_size: 128
-  num_workers: 8
-  pin_memory: true
-  checkpoint_interval: 20
-
 loss:
   margin: 0.5
   scale: 32.0
@@ -45,6 +29,22 @@ optimizer:
 scheduler:
   warmup_epochs: 0
   min_lr: 1.0e-5
+
+training:
+  epochs: 50
+  recog_batch_size: 256
+  pad_batch_size: 128
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
+
+data:
+  recog_split_path: "data/recog_splits.json"
+  pad_split_path: "data/pad_splits.json"
+  n_genuine_impressions: 32
+  n_impostor_impressions: 1
+  impostor_mode: all
+  n_impostor_subset: null
 
 output:
   checkpoint_dir: ckpts/mtld/

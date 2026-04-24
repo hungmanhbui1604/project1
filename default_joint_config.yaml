@@ -6,7 +6,6 @@ wandb:
   project: "DualViT-Joint"
 
 model:
-model:
   model_name: "dualvit"
   pretrained: false
   branch_a_num_classes: 256
@@ -28,7 +27,7 @@ scheduler:
   min_lr: 1.0e-5
 
 training:
-  epochs: 100
+  epochs: 50
   recog_batch_size: 256
   pad_batch_size: 128
   num_workers: 8
