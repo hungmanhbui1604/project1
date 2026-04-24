@@ -19,7 +19,7 @@ loss:
   scale: 32.0
 
 optimizer:
-  lr: 1.0e-3
+  lr: 1.0e-4
   weight_decay: 1.0e-4
 
 scheduler:

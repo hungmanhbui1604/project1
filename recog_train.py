@@ -438,7 +438,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = get_model(model_cfg["model_name"], **model_cfg).to(device)
+    model = get_model(**model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")

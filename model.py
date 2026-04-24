@@ -173,11 +173,23 @@ class DualMobileViT(nn.Module):
         return out_a, out_b
 
 
-def get_model(model_name, **kwargs):
+def get_model(model_name, model_cfg):
     model_name_lower = model_name.lower()
     if model_name_lower == 'dualvit':
-        return DualViT(**kwargs)
+        return DualViT(
+            pretrained=model_cfg.get("pretrained", True),
+            branch_a_num_classes=model_cfg.get("branch_a_num_classes", 256),
+            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 2),
+            head_hidden_dim=model_cfg.get("head_hidden_dim", 256),
+            head_drop_rate=model_cfg.get("head_drop_rate", 0.5),
+        )
     elif model_name_lower == 'dualmobilevit':
-        return DualMobileViT(**kwargs)
+        return DualMobileViT(
+            pretrained=model_cfg.get("pretrained", True),
+            branch_a_num_classes=model_cfg.get("branch_a_num_classes", 256),
+            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 2),
+            head_hidden_dim=model_cfg.get("head_hidden_dim", 256),
+            head_drop_rate=model_cfg.get("head_drop_rate", 0.5),
+        )
     else:
         raise ValueError(f"Unknown model name: {model_name}")
