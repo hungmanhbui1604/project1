@@ -436,11 +436,15 @@ def train_one_epoch(
         total_pad_loss += pad_loss.item()
 
         lr_val = scheduler.get_last_lr()[0]
+        log_vars = _unwrap(uncertainty_loss).log_vars.detach().cpu().numpy()
+        weights = np.exp(-log_vars)
         pbar.set_postfix(
             total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
             lr=f"{lr_val:.2e}",
+            recog_weight=f"{weights[0]:.4f}",
+            pad_weight=f"{weights[1]:.4f}",
         )
 
     avg_loss = total_loss / steps_per_epoch

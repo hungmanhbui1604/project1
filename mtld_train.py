@@ -537,12 +537,17 @@ def train_one_epoch(
         total_distill_loss += distill_loss.item()
 
         lr_val = scheduler.get_last_lr()[0]
+        log_vars = _unwrap(uncertainty_loss).log_vars.detach().cpu().numpy()
+        weights = np.exp(-log_vars)
         pbar.set_postfix(
             total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
             dist=f"{distill_loss.item():.4f}",
-            lr=f"{lr_val:.2e}",
+            lr=f"{lr_val:.2e}",\
+            recog_weight=f"{weights[0]:.4f}",
+            pad_weight=f"{weights[1]:.4f}",
+            distill_weight=f"{weights[2]:.4f}",
         )
 
     return {
