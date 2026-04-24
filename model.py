@@ -28,7 +28,6 @@ class MLPHead(nn.Module):
 class DualViT(nn.Module):
     def __init__(
         self,
-        model_name="vit_small_patch16_224",
         pretrained=True,
         branch_a_num_classes=128,
         branch_b_num_classes=2,
@@ -37,7 +36,7 @@ class DualViT(nn.Module):
     ):
         super().__init__()
 
-        base_model = timm.create_model(model_name, pretrained=pretrained)
+        base_model = timm.create_model("vit_small_patch16_224", pretrained=pretrained)
 
         self.patch_embed = base_model.patch_embed
         self.cls_token = base_model.cls_token
@@ -112,3 +111,73 @@ class DualViT(nn.Module):
             return branch_a_out, branch_b_out, features
 
         return branch_a_out, branch_b_out
+
+
+class DualMobileViT(nn.Module):
+    def __init__(
+        self,
+        pretrained=True,
+        branch_a_num_classes=128,
+        branch_b_num_classes=2,
+        head_hidden_dim=256,
+        head_drop_rate=0.5,
+    ):
+        super().__init__()
+
+        base_model = timm.create_model("mobilevit_s.cvnets_in1k", pretrained=pretrained, num_classes=0)
+        
+        # --- Shared Part ---
+        self.shared_stem = base_model.stem
+        self.shared_stages = base_model.stages[:3] 
+
+        # --- Branch A ---
+        self.branch_a_stages = base_model.stages[3:]
+        self.branch_a_final_conv = base_model.final_conv
+        num_features = base_model.num_features
+        self.branch_a_head = nn.Linear(num_features, branch_a_num_classes)
+
+        # --- Branch B ---
+        self.branch_b_stages = copy.deepcopy(base_model.stages[3:])
+        self.branch_b_final_conv = copy.deepcopy(base_model.final_conv)
+        self.branch_b_head = MLPHead(
+            in_features=num_features,
+            hidden_features=head_hidden_dim,
+            out_features=branch_b_num_classes,
+            drop_rate=head_drop_rate,
+        )
+
+    def forward_shared(self, x):
+        x = self.shared_stem(x)
+        x = self.shared_stages(x)
+        return x
+
+    def forward(self, x, branch=None):
+        shared_feat = self.forward_shared(x)
+
+        out_a = None
+        if branch is None or branch == 'a':
+            x_a = self.branch_a_stages(shared_feat)
+            x_a = self.branch_a_final_conv(x_a)
+            # Global Average Pooling
+            x_a = x_a.mean([-2, -1]) 
+            out_a = self.branch_a_head(x_a)
+
+        out_b = None
+        if branch is None or branch == 'b':
+            x_b = self.branch_b_stages(shared_feat)
+            x_b = self.branch_b_final_conv(x_b)
+            # Global Average Pooling
+            x_b = x_b.mean([-2, -1])
+            out_b = self.branch_b_head(x_b)
+
+        return out_a, out_b
+
+
+def get_model(model_name, **kwargs):
+    model_name_lower = model_name.lower()
+    if model_name_lower == 'dualvit':
+        return DualViT(**kwargs)
+    elif model_name_lower == 'dualmobilevit':
+        return DualMobileViT(**kwargs)
+    else:
+        raise ValueError(f"Unknown model name: {model_name}")

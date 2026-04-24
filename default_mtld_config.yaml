@@ -14,7 +14,7 @@ data:
   n_impostor_subset: null
 
 model:
-  model_name: "vit_small_patch16_224"
+  model_name: "dualvit"
   pretrained: false
   branch_a_num_classes: 256
   branch_b_num_classes: 2
@@ -35,12 +35,6 @@ training:
   checkpoint_interval: 20
 
 loss:
-  # Task loss weights
-  recog_weight: 0.1
-  pad_weight: 1.0
-  # Distillation weight
-  distill_weight: 1.0
-  # ArcFace params
   margin: 0.5
   scale: 32.0
 

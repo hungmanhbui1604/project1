@@ -7,7 +7,7 @@ wandb:
 
 model:
 model:
-  model_name: "vit_small_patch16_224"
+  model_name: "dualvit"
   pretrained: false
   branch_a_num_classes: 256
   branch_b_num_classes: 2
@@ -18,8 +18,6 @@ model:
 loss:
   margin: 0.5
   scale: 32.0
-  recog_weight: 0.1
-  pad_weight: 1.0
 
 optimizer:
   lr: 1.0e-3

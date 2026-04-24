@@ -18,8 +18,8 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from data import PADDataset, RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
-from loss import ArcFaceLoss
-from model import DualViT
+from loss import ArcFaceLoss, UncertaintyLoss
+from model import get_model
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -94,7 +94,7 @@ def compute_eer(
 
 @torch.no_grad()
 def get_embeddings(
-    model: DualViT,
+    model: torch.nn.Module,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -356,6 +356,7 @@ def save_best(
 def train_one_epoch(
     model: DDP,
     arcface_loss: DDP,
+    uncertainty_loss: DDP,
     recog_loader: DataLoader,
     recog_sampler: DistributedSampler,
     pad_loader: DataLoader,
@@ -366,11 +367,11 @@ def train_one_epoch(
     device: torch.device,
     epoch: int,
     steps_per_epoch: int,
-    recog_weight: float = 1.0,
-    pad_weight: float = 1.0,
+
 ) -> tuple[float, float]:
     model.train()
     arcface_loss.train()
+    uncertainty_loss.train()
 
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
@@ -379,7 +380,7 @@ def train_one_epoch(
     total_recog_loss = 0.0
     total_pad_loss = 0.0
 
-    all_params = list(model.parameters()) + list(arcface_loss.parameters())
+    all_params = list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters())
 
     # Truncate to the shorter loader via zip
     pbar = tqdm(
@@ -414,7 +415,7 @@ def train_one_epoch(
             recog_loss, _ = arcface_loss(recog_emb, recog_labels)
             pad_loss = F.cross_entropy(pad_logits, pad_labels)
 
-            loss = recog_weight * recog_loss + pad_weight * pad_loss
+            loss = uncertainty_loss([recog_loss, pad_loss])
 
         scaler.scale(loss).backward()
 
@@ -586,14 +587,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = DualViT(
-        model_name=model_cfg["model_name"],
-        pretrained=model_cfg["pretrained"],
-        branch_a_num_classes=model_cfg["branch_a_num_classes"],
-        branch_b_num_classes=model_cfg["branch_b_num_classes"],
-        head_hidden_dim=model_cfg["head_hidden_dim"],
-        head_drop_rate=model_cfg["head_drop_rate"],
-    ).to(device)
+    model = get_model(model_cfg["model_name"], **model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
@@ -613,9 +607,12 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     ).to(device)
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
+    uncertainty_loss = UncertaintyLoss(num_tasks=2).to(device)
+    uncertainty_loss = DDP(uncertainty_loss, device_ids=[local_rank], output_device=local_rank)
+
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
     optimizer = AdamW(
-        list(model.parameters()) + list(arcface_loss.parameters()),
+        list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters()),
         lr=opt_cfg["lr"],
         weight_decay=opt_cfg["weight_decay"],
     )
@@ -666,16 +663,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         disable=not is_main(),
     )
 
-    recog_weight = loss_cfg.get("recog_weight", 1.0)
-    pad_weight = loss_cfg.get("pad_weight", 1.0)
-
-    if is_main():
-        print(f"Loss weights: recog={recog_weight}, pad={pad_weight}")
-
     for epoch in epoch_pbar:
         avg_loss, avg_recog_loss, avg_pad_loss = train_one_epoch(
             model,
             arcface_loss,
+            uncertainty_loss,
             recog_train_loader,
             recog_train_sampler,
             pad_train_loader,
@@ -686,8 +678,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             device,
             epoch,
             steps_per_epoch,
-            recog_weight=recog_weight,
-            pad_weight=pad_weight,
         )
 
         dist.barrier()

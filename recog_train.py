@@ -18,7 +18,7 @@ from tqdm import tqdm
 import wandb
 from data import RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
 from loss import ArcFaceLoss
-from model import DualViT
+from model import get_model
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -93,7 +93,7 @@ def compute_eer(scores: np.ndarray, labels: np.ndarray):
 
 @torch.no_grad()
 def get_embeddings(
-    model: DualViT,
+    model: torch.nn.Module,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -438,14 +438,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = DualViT(
-        model_name=model_cfg["model_name"],
-        pretrained=model_cfg["pretrained"],
-        branch_a_num_classes=model_cfg["branch_a_num_classes"],
-        branch_b_num_classes=model_cfg["branch_b_num_classes"],
-        head_hidden_dim=model_cfg["head_hidden_dim"],
-        head_drop_rate=model_cfg["head_drop_rate"],
-    ).to(device)
+    model = get_model(model_cfg["model_name"], **model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")

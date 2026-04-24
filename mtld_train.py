@@ -23,8 +23,8 @@ from data import (
     RecogTrainingDataset,
     UniqueImageDataset,
 )
-from loss import ArcFaceLoss
-from model import DualViT
+from loss import ArcFaceLoss, UncertaintyLoss
+from model import get_model
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 
@@ -162,7 +162,7 @@ def compute_eer(
 
 @torch.no_grad()
 def get_embeddings(
-    model: DualViT,
+    model: torch.nn.Module,
     val_unique_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -312,28 +312,11 @@ def evaluate_pad(
 
 def load_teacher(
     checkpoint_path: str, model_cfg: dict, device: torch.device, branch: str
-) -> DualViT:
+) -> torch.nn.Module:
     """
     Load a pre-trained DualViT teacher from checkpoint.
     """
-    if branch == "a":
-        model = DualViT(
-            model_name=model_cfg["model_name"],
-            pretrained=model_cfg["pretrained"],
-            branch_a_num_classes=model_cfg["branch_a_num_classes"],
-            branch_b_num_classes=model_cfg["branch_b_num_classes"],
-            head_hidden_dim=model_cfg["head_hidden_dim"],
-            head_drop_rate=model_cfg["head_drop_rate"],
-        ).to(device)
-    else:
-        model = DualViT(
-            model_name=model_cfg["model_name"],
-            pretrained=model_cfg["pretrained"],
-            branch_a_num_classes=model_cfg["branch_a_num_classes"],
-            branch_b_num_classes=model_cfg["branch_b_num_classes"],
-            head_hidden_dim=model_cfg["head_hidden_dim"],
-            head_drop_rate=model_cfg["head_drop_rate"],
-        ).to(device)
+    model = get_model(model_cfg["model_name"], **model_cfg).to(device)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
     model.eval()
@@ -461,8 +444,9 @@ def save_best(
 def train_one_epoch(
     model: DDP,
     arcface_loss: DDP,
-    recog_teacher: DualViT,
-    pad_teacher: DualViT,
+    uncertainty_loss: DDP,
+    recog_teacher: torch.nn.Module,
+    pad_teacher: torch.nn.Module,
     recog_loader: DataLoader,
     recog_sampler: DistributedSampler,
     pad_loader: DataLoader,
@@ -473,12 +457,10 @@ def train_one_epoch(
     device: torch.device,
     epoch: int,
     steps_per_epoch: int,
-    recog_weight: float = 1.0,
-    pad_weight: float = 1.0,
-    distill_weight: float = 1.0,
 ) -> dict[str, float]:
     model.train()
     arcface_loss.train()
+    uncertainty_loss.train()
 
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
@@ -488,7 +470,7 @@ def train_one_epoch(
     total_pad_loss = 0.0
     total_distill_loss = 0.0
 
-    all_params = list(model.parameters()) + list(arcface_loss.parameters())
+    all_params = list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters())
 
     pbar = tqdm(
         zip(recog_loader, pad_loader),
@@ -535,11 +517,7 @@ def train_one_epoch(
                 pad_t_feats,
             )
 
-            loss = (
-                recog_weight * recog_loss
-                + pad_weight * pad_loss
-                + distill_weight * distill_loss
-            )
+            loss = uncertainty_loss([recog_loss, pad_loss, distill_loss])
 
         scaler.scale(loss).backward()
 
@@ -739,14 +717,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"[teacher] PAD teacher:   {n_pad_t:.2f}M params (frozen)")
 
     # ── Student Model ─────────────────────────────────────────────────────
-    model = DualViT(
-        model_name=model_cfg["model_name"],
-        pretrained=model_cfg["pretrained"],
-        branch_a_num_classes=model_cfg["branch_a_num_classes"],
-        branch_b_num_classes=model_cfg["branch_b_num_classes"],
-        head_hidden_dim=model_cfg["head_hidden_dim"],
-        head_drop_rate=model_cfg["head_drop_rate"],
-    ).to(device)
+    model = get_model(model_cfg["model_name"], **model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
@@ -766,9 +737,12 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     ).to(device)
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
+    uncertainty_loss = UncertaintyLoss(num_tasks=3).to(device)
+    uncertainty_loss = DDP(uncertainty_loss, device_ids=[local_rank], output_device=local_rank)
+
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
     optimizer = AdamW(
-        list(model.parameters()) + list(arcface_loss.parameters()),
+        list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters()),
         lr=opt_cfg["lr"],
         weight_decay=opt_cfg["weight_decay"],
     )
@@ -784,16 +758,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     scaler = torch.amp.GradScaler("cuda")
-
-    recog_weight = loss_cfg.get("recog_weight", 1.0)
-    pad_weight = loss_cfg.get("pad_weight", 1.0)
-    distill_weight = loss_cfg.get("distill_weight", 1.0)
-
-    if is_main():
-        print(
-            f"\nLoss weights: recog={recog_weight}, pad={pad_weight}, "
-            f"distill={distill_weight}"
-        )
 
     # ── Training loop ─────────────────────────────────────────────────────
     start_epoch = 1
@@ -834,6 +798,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         train_metrics = train_one_epoch(
             model,
             arcface_loss,
+            uncertainty_loss,
             recog_teacher,
             pad_teacher,
             recog_train_loader,
@@ -846,9 +811,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             device,
             epoch,
             steps_per_epoch,
-            recog_weight=recog_weight,
-            pad_weight=pad_weight,
-            distill_weight=distill_weight,
         )
 
         dist.barrier()

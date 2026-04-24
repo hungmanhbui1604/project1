@@ -1051,15 +1051,33 @@ if __name__ == "__main__":
         )
         print()
 
-    create_LivDet_splits(
-        data_root="data/LivDet",
-        recog_output_path="data/LivDet/recog_splits.json",
-        pad_output_path="data/LivDet/pad_splits.json",
-        val_ratio=0.3,
-        min_samples=3,
-        seed=42,
-    )
-    print()
+    livdet_data_roots = [
+        "data/LivDet/LivDet2009/Biometrika",
+        "data/LivDet/LivDet2009/CrossMatch",
+        "data/LivDet/LivDet2009/Identix",
+        "data/LivDet/LivDet2011/Biometrika",
+        "data/LivDet/LivDet2011/Digital",
+        "data/LivDet/LivDet2011/Italdata",
+        "data/LivDet/LivDet2011/Sagem",
+        "data/LivDet/LivDet2013/Biometrika",
+        "data/LivDet/LivDet2013/CrossMatch",
+        "data/LivDet/LivDet2013/Italdata",
+        "data/LivDet/LivDet2015/Biometrika",
+        "data/LivDet/LivDet2015/CrossMatch",
+        "data/LivDet/LivDet2015/DigitalPersona",
+        "data/LivDet/LivDet2015/GreenBit",
+        "data/LivDet/LivDet2015/HiScan",
+    ]
+    for root in livdet_data_roots:
+        create_LivDet_splits(
+            data_root=root,
+            recog_output_path=f"{root}/recog_splits.json",
+            pad_output_path=f"{root}/pad_splits.json",
+            val_ratio=0.3,
+            min_samples=3,
+            seed=42,
+        )
+        print()
 
     create_pad_splits(
         data_root="data/ATVS-FF",
@@ -1099,7 +1117,21 @@ if __name__ == "__main__":
 
     unify_pad_splits(
         pad_split_paths=[
-            "data/LivDet/pad_splits.json",
+            "data/LivDet/LivDet2009/Biometrika/pad_splits.json",
+            "data/LivDet/LivDet2009/CrossMatch/pad_splits.json",
+            "data/LivDet/LivDet2009/Identix/pad_splits.json",
+            "data/LivDet/LivDet2011/Biometrika/pad_splits.json",
+            "data/LivDet/LivDet2011/Digital/pad_splits.json",
+            "data/LivDet/LivDet2011/Italdata/pad_splits.json",
+            "data/LivDet/LivDet2011/Sagem/pad_splits.json",
+            "data/LivDet/LivDet2013/Biometrika/pad_splits.json",
+            "data/LivDet/LivDet2013/CrossMatch/pad_splits.json",
+            "data/LivDet/LivDet2013/Italdata/pad_splits.json",
+            "data/LivDet/LivDet2015/Biometrika/pad_splits.json",
+            "data/LivDet/LivDet2015/CrossMatch/pad_splits.json",
+            "data/LivDet/LivDet2015/DigitalPersona/pad_splits.json",
+            "data/LivDet/LivDet2015/GreenBit/pad_splits.json",
+            "data/LivDet/LivDet2015/HiScan/pad_splits.json",
             "data/ATVS-FF/pad_splits.json",
         ],
         output_path="data/pad_splits.json",
