@@ -17,7 +17,9 @@ def cosine_warmup_scheduler(
                 return 0.0
 
             if step < warmup_iters:
-                return (step + 1) / max(warmup_iters, 1)
+                warmup_progress = (step + 1) / max(warmup_iters, 1)
+                lr = min_lr + (base_lr - min_lr) * warmup_progress
+                return lr / base_lr
 
             progress = (step - warmup_iters) / max(total_iters - warmup_iters, 1)
             progress = min(progress, 1.0)
@@ -31,4 +33,7 @@ def cosine_warmup_scheduler(
 
     lr_lambdas = [get_lr_lambda(pg["lr"]) for pg in optimizer.param_groups]
 
-    return LambdaLR(optimizer, lr_lambda=lr_lambdas)
+    return LambdaLR(
+        optimizer,
+        lr_lambda=lr_lambdas,
+    )

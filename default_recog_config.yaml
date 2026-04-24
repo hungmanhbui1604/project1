@@ -8,7 +8,7 @@ wandb:
 model:
   model_name: "vit_small_patch16_224"
   pretrained: true
-  branch_a_num_classes: 128
+  branch_a_num_classes: 256
   branch_b_num_classes: 2
   head_hidden_dim: 256
   head_drop_rate: 0.5
@@ -19,15 +19,15 @@ loss:
   scale: 32.0
 
 optimizer:
-  lr: 1.0e-4
-  weight_decay: 1.0e-5
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
 
 scheduler:
   warmup_epochs: 0
   min_lr: 1.0e-5
 
 training:
-  epochs: 60
+  epochs: 100
   recog_batch_size: 256
   num_workers: 8
   pin_memory: true

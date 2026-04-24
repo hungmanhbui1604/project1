@@ -8,23 +8,23 @@ wandb:
 model:
   model_name: "vit_small_patch16_224"
   pretrained: false
-  branch_a_num_classes: 128
+  branch_a_num_classes: 256
   branch_b_num_classes: 2
   head_hidden_dim: 256
   head_drop_rate: 0.5
   ckpt_path: "ckpts/recog/best_model.pth"
 
 optimizer:
-  lr: 1.0e-4
-  weight_decay: 1.0e-5
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
 
 scheduler:
   warmup_epochs: 0
   min_lr: 1.0e-5
 
 training:
-  epochs: 30
-  pad_batch_size: 128
+  epochs: 50
+  pad_batch_size: 256
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 10
@@ -37,4 +37,4 @@ output:
   best_model_name: "best_model.pth"
 
 evaluation:
-  pad_batch_size: 128
+  pad_batch_size: 256

@@ -49,3 +49,20 @@ class ArcFaceLoss(nn.Module):
         loss = F.cross_entropy(logits, labels)
 
         return loss, logits
+
+
+class UncertaintyLoss(nn.Module):
+    def __init__(self, num_tasks=2, init_log_var: float = 0.0):
+        super().__init__()
+        self.log_vars = nn.Parameter(torch.full((num_tasks,), init_log_var))
+
+    def forward(self, loss0, loss1):
+        # task 0
+        precision0 = torch.exp(-self.log_vars[0])
+        loss0 = precision0 * loss0 + self.log_vars[0]
+
+        # task 1
+        precision1 = torch.exp(-self.log_vars[1])
+        loss1 = precision1 * loss1 + self.log_vars[1]
+
+        return loss0 + loss1

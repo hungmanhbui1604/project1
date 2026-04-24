@@ -52,12 +52,7 @@ class DualViT(nn.Module):
         # --- branch A ---
         self.branch_a_blocks = base_model.blocks[4:]
         self.branch_a_norm = base_model.norm
-        self.branch_a_head = MLPHead(
-            in_features=embed_dim,
-            hidden_features=head_hidden_dim,
-            out_features=branch_a_num_classes,
-            drop_rate=head_drop_rate,
-        )
+        self.branch_a_head = nn.Linear(embed_dim, branch_a_num_classes)
 
         # --- branch B ---
         self.branch_b_blocks = copy.deepcopy(base_model.blocks[4:8])

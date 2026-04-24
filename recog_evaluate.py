@@ -74,10 +74,6 @@ def compute_recog_metrics(
         tar_at_far[far_target] = float(tar[mask].max()) if mask.any() else 0.0
 
     return {
-        "thresholds": thrs.tolist(),
-        "FMR": fmr.tolist(),
-        "FNMR": fnmr.tolist(),
-        "TAR": tar.tolist(),
         "EER": eer,
         "EER_threshold": eer_thr,
         "AUC": auc_roc,
@@ -114,6 +110,9 @@ def collect_scores(
 
     all_scores, all_labels = [], []
     for idx_a, idx_b, labels in tqdm(loader, desc="Inference", unit="batch"):
+        idx_a = idx_a.to(device, non_blocking=True)
+        idx_b = idx_b.to(device, non_blocking=True)
+        
         emb_a = embeddings[idx_a]
         emb_b = embeddings[idx_b]
 

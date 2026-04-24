@@ -16,18 +16,18 @@ data:
 model:
   model_name: "vit_small_patch16_224"
   pretrained: false
-  branch_a_num_classes: 128
+  branch_a_num_classes: 256
   branch_b_num_classes: 2
   head_hidden_dim: 256
   head_drop_rate: 0.5
-  ckpt_path: "ckpts/recog/best_model.pth"
+  ckpt_path: "ckpts/joint/best_model.pth"
 
 teachers:
   recog_checkpoint: ckpts/recog/best_model.pth
   pad_checkpoint: ckpts/pad/best_model.pth
 
 training:
-  epochs: 30
+  epochs: 50
   recog_batch_size: 256
   pad_batch_size: 128
   num_workers: 8
@@ -36,7 +36,7 @@ training:
 
 loss:
   # Task loss weights
-  recog_weight: 1.0
+  recog_weight: 0.1
   pad_weight: 1.0
   # Distillation weight
   distill_weight: 1.0
@@ -45,8 +45,8 @@ loss:
   scale: 32.0
 
 optimizer:
-  lr: 1.0e-4
-  weight_decay: 1.0e-5
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
 
 scheduler:
   warmup_epochs: 0

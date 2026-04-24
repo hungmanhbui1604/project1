@@ -152,6 +152,9 @@ def evaluate(
     )
 
     for idx_a, idx_b, labels in pbar:
+        idx_a = idx_a.to(device, non_blocking=True)
+        idx_b = idx_b.to(device, non_blocking=True)
+        
         emb_a = global_embeddings[idx_a]
         emb_b = global_embeddings[idx_b]
 
