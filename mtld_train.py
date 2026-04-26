@@ -314,7 +314,7 @@ def load_teacher(
     checkpoint_path: str, model_cfg: dict, device: torch.device, branch: str
 ) -> torch.nn.Module:
     """
-    Load a pre-trained DualViT teacher from checkpoint.
+    Load a pre-trained teacher from checkpoint.
     """
     model = get_model(model_cfg["model_name"], **model_cfg).to(device)
     ckpt = torch.load(checkpoint_path, map_location="cpu")
@@ -588,7 +588,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "DualViT-MTLD"), config=cfg)
+        wandb.init(project=wandb_cfg.get("project", "MTLD"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -730,7 +730,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[student] DualViT  ({n_params:.2f}M params)")
+        print(f"[student] {model_cfg['model_name']} ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = recog_train_dataset.n_ids

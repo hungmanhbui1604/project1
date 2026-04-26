@@ -483,7 +483,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
         wandb.init(
-            project=wandb_cfg.get("project", "DualViT-Joint"), config=cfg
+            project=wandb_cfg.get("project", "Joint"), config=cfg
         )
 
     # ── Transforms ────────────────────────────────────────────────────────
@@ -599,7 +599,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] DualViT  ({n_params:.2f}M params)")
+        print(f"[model] {model_cfg['model_name']}  ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = recog_train_dataset.n_ids
@@ -821,7 +821,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DualViT Joint Training (Recognition + PAD)")
+    parser = argparse.ArgumentParser(description="Joint Training (Recognition + PAD)")
     parser.add_argument(
         "--config",
         type=str,

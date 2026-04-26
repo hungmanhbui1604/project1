@@ -369,7 +369,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "DualViT-Recognition"), config=cfg)
+        wandb.init(project=wandb_cfg.get("project", "Recognition"), config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform = get_transforms("all")
@@ -438,7 +438,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
-    model = get_model(**model_cfg).to(device)
+    model = get_model(model_cfg["model_name"], model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
@@ -446,7 +446,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] DualViT  ({n_params:.2f}M params)")
+        print(f"[model] {model_cfg['model_name']} ({n_params:.2f}M params)")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = train_dataset.n_ids
@@ -610,7 +610,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DualViT Recognition Training")
+    parser = argparse.ArgumentParser(description="Recognition Training")
     parser.add_argument(
         "--config",
         type=str,

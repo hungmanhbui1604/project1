@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data import PADDataset
-from model import DualViT
+from model import get_model
 from transforms import get_transforms
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ def compute_pad_metrics(preds: np.ndarray, labels: np.ndarray) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DualViT PAD Evaluation")
+    parser = argparse.ArgumentParser(description="PAD Evaluation")
     parser.add_argument(
         "--config",
         required=True,
@@ -204,22 +204,13 @@ def main() -> None:
     )
 
     # ── Model ────────────────────────────────────────────────────────────
-    model = DualViT(
-        model_name=model_cfg["model_name"],
-        pretrained=model_cfg["pretrained"],
-        branch_a_num_classes=model_cfg["branch_a_num_classes"],
-        branch_b_num_classes=model_cfg["branch_b_num_classes"],
-        head_hidden_dim=model_cfg["head_hidden_dim"],
-        head_drop_rate=model_cfg["head_drop_rate"],
-    ).to(device)
-    print(f"[model] DualViT ({model_cfg['model_name']})")
+    model = get_model(model_cfg["model_name"], model_cfg).to(device)
+    n_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"[model] {model_cfg['model_name']} ({n_params:.2f}M params)")
 
     print(f"Loading checkpoint: {args.checkpoint_path}")
     ckpt = torch.load(args.checkpoint_path, map_location="cpu")
     model.load_state_dict(ckpt["model"])
-
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"({n_params:.2f}M params)")
 
     # ── Evaluate ─────────────────────────────────────────────────────────
     print("\nEvaluating on PAD test set...")
@@ -242,9 +233,14 @@ def main() -> None:
 
     # ── Save JSON ────────────────────────────────────────────────────────
     results = {
-        "checkpoint": args.checkpoint_path,
         "split_path": args.split_path,
-        "metrics": metrics,
+        "n_total": metrics["n_total"],
+        "n_live": metrics["n_live"],
+        "n_spoof": metrics["n_spoof"],
+        "ACE": metrics["ACE"],
+        "APCER": metrics["APCER"],
+        "BPCER": metrics["BPCER"],
+        "accuracy": metrics["accuracy"],
     }
 
     json_path = os.path.join(args.output_dir, "pad_metrics.json")
