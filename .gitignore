@@ -1,6 +1,8 @@
 __pycache__/
+.vscode/
 ckpts/
 data/
+foreground_data/
 results/
 wandb/
 data.zip
