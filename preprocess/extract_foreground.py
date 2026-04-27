@@ -1,9 +1,11 @@
+import shutil
 from pathlib import Path
+
 from PIL import Image
 from tqdm import tqdm
 
 # Import your transform
-from ..transforms import ExtractFingerprint
+from transforms import ExtractFingerprintForeground
 
 
 def process_dataset(
@@ -15,40 +17,39 @@ def process_dataset(
     input_path = Path(input_dir)
     output_path = Path(output_dir)
 
-    extractor = ExtractFingerprint(padding=padding)
+    extractor = ExtractFingerprintForeground(padding=padding)
 
-    # Collect all image files
-    image_files = [
-        p for p in input_path.rglob("*")
-        if p.suffix.lower() in extensions
-    ]
+    # Collect ALL files (not just images)
+    all_files = [p for p in input_path.rglob("*") if p.is_file()]
 
-    print(f"Found {len(image_files)} images.")
+    print(f"Found {len(all_files)} total files.")
 
-    for img_path in tqdm(image_files):
+    for file_path in tqdm(all_files):
         try:
-            # Load image
-            img = Image.open(img_path).convert("RGB")
-
-            # Apply extraction
-            processed = extractor(img)
-
-            # Create output path (preserve folder structure)
-            relative_path = img_path.relative_to(input_path)
+            relative_path = file_path.relative_to(input_path)
             save_path = output_path / relative_path
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Save image
-            processed.save(save_path)
+            # If it's an image → process
+            if file_path.suffix.lower() in extensions:
+                img = Image.open(file_path).convert("RGB")
+                processed = extractor(img)
+                processed.save(save_path)
+
+            # Otherwise → copy as-is
+            else:
+                shutil.copy2(file_path, save_path)
 
         except Exception as e:
-            print(f"Error processing {img_path}: {e}")
+            print(f"Error processing {file_path}: {e}")
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Extract fingerprint foreground from dataset")
+    parser = argparse.ArgumentParser(
+        description="Extract fingerprint foreground from dataset"
+    )
     parser.add_argument("--input", required=True, help="Input dataset directory")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--padding", type=int, default=10)

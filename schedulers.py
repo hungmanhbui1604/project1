@@ -37,3 +37,13 @@ def cosine_warmup_scheduler(
         optimizer,
         lr_lambda=lr_lambdas,
     )
+
+
+def get_scheduler(scheduler_name: str, optimizer: torch.optim.Optimizer, iters: int, epochs: int, sched_cfg: dict):
+    total_iters = iters * epochs
+    warmup_iters = iters * sched_cfg["warmup_epochs"]
+
+    if scheduler_name == "cosine":
+        return cosine_warmup_scheduler(optimizer=optimizer, total_iters=total_iters, warmup_iters=warmup_iters, min_lr=sched_cfg["min_lr"])
+    
+    raise ValueError("Unknown scheduler: " + scheduler_name)

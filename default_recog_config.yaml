@@ -3,7 +3,22 @@ general:
 
 wandb:
   api_key: null
-  project: "DualViT-Recognition"
+  project: "Dual-Recognition"
+
+data:
+  split_path: "data/recog_splits.json"
+  n_genuine_impressions: 32
+  n_impostor_impressions: 1
+  impostor_mode: "all"
+  n_impostor_subset: null
+  transform_name: "dual"
+
+training:
+  epochs: 50
+  recog_batch_size: 256
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 20
 
 model:
   model_name: "dualvit"
@@ -18,27 +33,16 @@ loss:
   margin: 0.5
   scale: 32.0
 
+
 optimizer:
+  opt_name: "adamw"
   lr: 1.0e-4
   weight_decay: 1.0e-4
 
 scheduler:
-  warmup_epochs: 0
+  sched_name: "cosine"
+  warmup_epochs: 3
   min_lr: 1.0e-5
-
-training:
-  epochs: 50
-  recog_batch_size: 256
-  num_workers: 8
-  pin_memory: true
-  checkpoint_interval: 20
-
-data:
-  split_path: "data/recog_splits.json"
-  n_genuine_impressions: 32
-  n_impostor_impressions: 1
-  impostor_mode: "all"
-  n_impostor_subset: null
 
 output:
   checkpoint_dir: "ckpts/recog/"

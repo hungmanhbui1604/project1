@@ -6,20 +6,18 @@ import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+import wandb
 import yaml
 from sklearn.metrics import roc_curve
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-import wandb
 from data import RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
 from loss import ArcFaceLoss
 from model import get_model
-from schedulers import cosine_warmup_scheduler
+from schedulers import get_scheduler
 from transforms import get_transforms
 
 # ---------------------------------------------------------------------------
@@ -59,6 +57,20 @@ def _unwrap(module):
 
 
 # ---------------------------------------------------------------------------
+# Optimizer Selection
+# ---------------------------------------------------------------------------
+
+
+def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
+    if opt_name == "adamw":
+        return torch.optim.AdamW(
+            parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
+        )
+
+    raise ValueError("Unknown optimizer: " + opt_name)
+
+
+# ---------------------------------------------------------------------------
 # EER Computation
 # ---------------------------------------------------------------------------
 
@@ -83,7 +95,7 @@ def compute_eer(scores: np.ndarray, labels: np.ndarray):
         eer = x0 + t * (x1 - x0)
         eer_thr = thrs[idx0] + t * (thrs[idx1] - thrs[idx0])
 
-    return float(eer), float(eer_thr)
+    return float(eer) * 100.0, float(eer_thr)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +166,7 @@ def evaluate(
     for idx_a, idx_b, labels in pbar:
         idx_a = idx_a.to(device, non_blocking=True)
         idx_b = idx_b.to(device, non_blocking=True)
-        
+
         emb_a = global_embeddings[idx_a]
         emb_b = global_embeddings[idx_b]
 
@@ -177,8 +189,8 @@ def load_checkpoint(
     path: str,
     model: DDP,
     arcface_loss: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
@@ -215,8 +227,8 @@ def save_checkpoint(
     epoch: int,
     model: DDP,
     arcface_loss: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     eer: float,
 ) -> None:
@@ -263,7 +275,7 @@ def save_best(
         },
         path,
     )
-    tqdm.write(f"  [best model] EER={eer:.4f} saved → {path}")
+    tqdm.write(f"  [best model] EER={eer:.2f} saved → {path}")
 
     if wandb.run is not None:
         artifact = wandb.Artifact(
@@ -288,8 +300,8 @@ def train_one_epoch(
     arcface_loss: DDP,
     train_loader: DataLoader,
     train_sampler: DistributedSampler,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     device: torch.device,
     epoch: int,
@@ -349,13 +361,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     general_cfg = cfg["general"]
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
-    training_cfg = cfg["training"]
+    train_cfg = cfg["training"]
     loss_cfg = cfg["loss"]
     opt_cfg = cfg["optimizer"]
     sched_cfg = cfg["scheduler"]
     output_cfg = cfg["output"]
     wandb_cfg = cfg["wandb"]
-    evaluation_cfg = cfg["evaluation"]
+    eval_cfg = cfg["evaluation"]
 
     # ── DDP init ────────────────────────────────────────────────────────────
     local_rank, world_size = setup_ddp()
@@ -369,10 +381,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "Recognition"), config=cfg)
+        wandb.init(project=wandb_cfg["project"], config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
-    train_transform, eval_transform = get_transforms("all")
+    train_transform, eval_transform, _ = get_transforms(data_cfg["transform_name"])
 
     # ── Datasets ──────────────────────────────────────────────────────────
     train_dataset = RecogTrainingDataset(
@@ -385,9 +397,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         n_genuine_impressions=data_cfg["n_genuine_impressions"],
         n_impostor_impressions=data_cfg["n_impostor_impressions"],
         impostor_mode=data_cfg["impostor_mode"],
-        n_impostor_subset=None
-        if data_cfg.get("n_impostor_subset") in ("None", None, "null")
-        else data_cfg["n_impostor_subset"],
+        n_impostor_subset=data_cfg["n_impostor_subset"],
         seed=general_cfg["seed"],
     )
     unique_val_dataset = UniqueImageDataset(
@@ -408,18 +418,18 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_cfg["recog_batch_size"],
+        batch_size=train_cfg["recog_batch_size"],
         sampler=train_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=evaluation_cfg["recog_batch_size"],
+        batch_size=eval_cfg["recog_batch_size"],
         shuffle=False,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     unique_val_sampler = DistributedSampler(
@@ -431,18 +441,25 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=training_cfg["recog_batch_size"],
+        batch_size=train_cfg["recog_batch_size"],
         sampler=unique_val_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
     model = get_model(model_cfg["model_name"], model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
-        model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
+        model.load_state_dict(
+            torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"]
+        )
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+    model = DDP(
+        model,
+        device_ids=[local_rank],
+        output_device=local_rank,
+        find_unused_parameters=True,
+    )
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
@@ -459,19 +476,15 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
-    optimizer = AdamW(
-        list(model.parameters()) + list(arcface_loss.parameters()),
-        lr=opt_cfg["lr"],
-        weight_decay=opt_cfg["weight_decay"],
-    )
+    all_parameters = list(model.parameters()) + list(arcface_loss.parameters())
+    optimizer = get_optimizer(opt_cfg["opt_name"], all_parameters, opt_cfg)
 
-    total_iters = training_cfg["epochs"] * len(train_loader)
-    warmup_iters = sched_cfg["warmup_epochs"] * len(train_loader)
-    scheduler = cosine_warmup_scheduler(
+    scheduler = get_scheduler(
+        sched_cfg["sched_name"],
         optimizer,
-        warmup_iters=warmup_iters,
-        total_iters=total_iters,
-        min_lr=sched_cfg["min_lr"],
+        iters=len(train_loader),
+        epochs=train_cfg["epochs"],
+        sched_cfg=sched_cfg,
     )
 
     scaler = torch.amp.GradScaler("cuda")
@@ -496,7 +509,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print("=" * 60)
 
     epoch_pbar = tqdm(
-        range(start_epoch, training_cfg["epochs"] + 1),
+        range(start_epoch, train_cfg["epochs"] + 1),
         desc="Training",
         unit="epoch",
         disable=not is_main(),
@@ -525,11 +538,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             eer, thr = evaluate(val_loader, global_embeddings, device, epoch)
 
             epoch_pbar.set_postfix(
-                loss=f"{avg_loss:.4f}", eer=f"{eer:.4f}", thr=f"{thr:.4f}"
+                loss=f"{avg_loss:.4f}", eer=f"{eer:.2f}", thr=f"{thr:.4f}"
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | avg loss: {avg_loss:.4f} | "
-                f"val EER: {eer:.4f}  (threshold={thr:.4f})"
+                f"val EER: {eer:.2f}  (threshold={thr:.4f})"
             )
 
             if wandb.run is not None:
@@ -557,7 +570,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     eer,
                 )
 
-            if epoch % training_cfg["checkpoint_interval"] == 0:
+            if epoch % train_cfg["checkpoint_interval"] == 0:
                 ckpt_path = os.path.join(
                     output_cfg["checkpoint_dir"], f"checkpoint_epoch{epoch:03d}.pth"
                 )
@@ -576,7 +589,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val EER: {best_eer:.4f}")
+        print(f"Training complete. Best val EER: {best_eer:.2f}")
         print("=" * 60)
 
         if wandb.run is not None:

@@ -19,7 +19,7 @@ optimizer:
   weight_decay: 1.0e-4
 
 scheduler:
-  warmup_epochs: 0
+  warmup_epochs: 3
   min_lr: 1.0e-5
 
 training:

@@ -1,12 +1,13 @@
 from typing import Tuple
-import numpy as np
+
 import cv2
-from PIL import Image
+import numpy as np
 import torchvision.transforms as transforms
 import torchvision.transforms.functional as F
+from PIL import Image
 
 
-class ExtractFingerprint:
+class ExtractFingerprintForeground:
     def __init__(self, padding: int = 10):
         self.padding = padding
 
@@ -99,7 +100,6 @@ class SquarePad:
 
 train_transform = transforms.Compose(
     [
-        ExtractFingerprint(padding=10),
         SquarePad(),
         transforms.Resize((224, 224)),
         transforms.ColorJitter(brightness=0.2, contrast=0.2),
@@ -111,7 +111,16 @@ train_transform = transforms.Compose(
 
 test_transform = transforms.Compose(
     [
-        ExtractFingerprint(padding=10),
+        SquarePad(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ]
+)
+
+infer_transform = transforms.Compose(
+    [
+        ExtractFingerprintForeground(padding=10),
         SquarePad(),
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -120,14 +129,8 @@ test_transform = transforms.Compose(
 )
 
 
-def get_transforms(
-    phase: str = "all",
-) -> Tuple[transforms.Compose, transforms.Compose] | transforms.Compose:
-    if phase == "all":
-        return train_transform, test_transform
-    elif phase == "train":
-        return train_transform
-    elif phase == "test":
-        return test_transform
-    else:
-        raise ValueError(phase)
+def get_transforms(transform_name: str) -> tuple:
+    if transform_name == "dual":
+        return train_transform, test_transform, infer_transform
+
+    raise ValueError("Unknown transform_name: " + transform_name)
