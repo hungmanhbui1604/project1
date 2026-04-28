@@ -8,15 +8,15 @@ import torch.distributed as dist
 import torch.nn.functional as F
 import wandb
 import yaml
-from sklearn.metrics import roc_curve
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from data import RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
-from loss import ArcFaceLoss
-from model import get_model
+from losses import ArcFaceLoss
+from metrics import compute_recog_metrics
+from models import get_model
 from schedulers import get_scheduler
 from transforms import get_transforms
 
@@ -68,34 +68,6 @@ def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
         )
 
     raise ValueError("Unknown optimizer: " + opt_name)
-
-
-# ---------------------------------------------------------------------------
-# EER Computation
-# ---------------------------------------------------------------------------
-
-
-@torch.no_grad()
-def compute_eer(scores: np.ndarray, labels: np.ndarray):
-    fmr, tar, thrs = roc_curve(labels, scores, pos_label=1)
-    fnmr = 1.0 - tar
-
-    diff = fmr - fnmr
-    idx1 = np.where(diff >= 0)[0][0]
-    idx0 = idx1 - 1 if idx1 > 0 else idx1
-
-    x0, y0 = fmr[idx0], fnmr[idx0]
-    x1, y1 = fmr[idx1], fnmr[idx1]
-
-    if idx0 == idx1:
-        eer = (x0 + y0) / 2
-        eer_thr = thrs[idx0]
-    else:
-        t = (y0 - x0) / ((x1 - x0) - (y1 - y0))
-        eer = x0 + t * (x1 - x0)
-        eer_thr = thrs[idx0] + t * (thrs[idx1] - thrs[idx0])
-
-    return float(eer) * 100.0, float(eer_thr)
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +147,11 @@ def evaluate(
         all_scores.append(cos_sim.cpu().numpy())
         all_labels.append(labels.numpy())
 
-    eer, thr = compute_eer(np.concatenate(all_scores), np.concatenate(all_labels))
+    metrics = compute_recog_metrics(
+        np.concatenate(all_scores), np.concatenate(all_labels)
+    )
 
-    return eer, thr
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +236,6 @@ def save_best(
     best_name: str,
     epoch: int,
     model: DDP,
-    arcface_loss: DDP,
     eer: float,
 ) -> None:
     path = os.path.join(ckpt_dir, best_name)
@@ -270,18 +243,17 @@ def save_best(
         {
             "epoch": epoch,
             "model": _unwrap(model).state_dict(),
-            "arcface": _unwrap(arcface_loss).state_dict(),
             "eer": eer,
         },
         path,
     )
-    tqdm.write(f"  [best model] EER={eer:.2f} saved → {path}")
+    tqdm.write(f"  [best model] EER={eer:.2%} saved → {path}")
 
     if wandb.run is not None:
         artifact = wandb.Artifact(
             name="best-model",
             type="model",
-            metadata={"epoch": epoch, "val_eer": eer},
+            metadata={"epoch": epoch, "eer": eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
@@ -535,39 +507,46 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         )
 
         if is_main():
-            eer, thr = evaluate(val_loader, global_embeddings, device, epoch)
+            metrics = evaluate(val_loader, global_embeddings, device, epoch)
 
             epoch_pbar.set_postfix(
-                loss=f"{avg_loss:.4f}", eer=f"{eer:.2f}", thr=f"{thr:.4f}"
+                loss=f"{avg_loss:.4f}",
+                eer=f"{metrics['eer']:.2%}",
+                thr=f"{metrics['eer_threshold']:.4f}",
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | avg loss: {avg_loss:.4f} | "
-                f"val EER: {eer:.2f}  (threshold={thr:.4f})"
+                f"val EER: {metrics['eer']:.2%}  (thr={metrics['eer_threshold']:.4f}) | "
+                f"val TAR@FAR=0.1: {metrics['tar_at_far_0.1']:.2%} | "
+                f"val TAR@FAR=0.01: {metrics['tar_at_far_0.01']:.2%} | "
+                f"val TAR@FAR=0.001: {metrics['tar_at_far_0.001']:.2%}"
             )
 
             if wandb.run is not None:
                 wandb.log(
                     {
-                        "train/loss_epoch": avg_loss,
-                        "val/eer": eer,
-                        "val/threshold": thr,
+                        "train/loss": avg_loss,
+                        "val/eer": metrics["eer"],
+                        "val/eer_threshold": metrics["eer_threshold"],
+                        "val/tar_at_far_0.1": metrics["tar_at_far_0.1"],
+                        "val/tar_at_far_0.01": metrics["tar_at_far_0.01"],
+                        "val/tar_at_far_0.001": metrics["tar_at_far_0.001"],
                         "epoch": epoch,
                     }
                 )
             else:
                 history["epoch"].append(epoch)
                 history["train_loss"].append(avg_loss)
-                history["val_eer"].append(eer)
+                history["val_eer"].append(metrics["eer"])
 
-            if eer < best_eer:
-                best_eer = eer
+            if metrics["eer"] < best_eer:
+                best_eer = metrics["eer"]
                 save_best(
                     output_cfg["checkpoint_dir"],
                     output_cfg["best_model_name"],
                     epoch,
                     model,
-                    arcface_loss,
-                    eer,
+                    metrics["eer"],
                 )
 
             if epoch % train_cfg["checkpoint_interval"] == 0:
@@ -582,14 +561,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    eer,
+                    metrics["eer"],
                 )
 
         dist.barrier()
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val EER: {best_eer:.2f}")
+        print(f"Training complete. Best val EER: {best_eer:.2%}")
         print("=" * 60)
 
         if wandb.run is not None:

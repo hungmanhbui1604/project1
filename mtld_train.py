@@ -23,8 +23,8 @@ from data import (
     RecogTrainingDataset,
     UniqueImageDataset,
 )
-from loss import ArcFaceLoss, UncertaintyLoss
-from model import get_model
+from losses import ArcFaceLoss, UncertaintyLoss
+from models import get_model
 from schedulers import cosine_warmup_scheduler
 from transforms import get_transforms
 

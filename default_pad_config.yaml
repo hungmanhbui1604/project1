@@ -3,38 +3,41 @@ general:
 
 wandb:
   api_key: null
-  project: "DualViT-PAD"
+  project: "Dual-PAD"
 
-model:
-  model_name: "dualvit"
-  pretrained: false
-  branch_a_num_classes: 256
-  branch_b_num_classes: 2
-  head_hidden_dim: 256
-  head_drop_rate: 0.5
-  ckpt_path: "ckpts/recog/best_model.pth"
-
-optimizer:
-  lr: 1.0e-4
-  weight_decay: 1.0e-4
-
-scheduler:
-  warmup_epochs: 3
-  min_lr: 1.0e-5
+data:
+  split_path: "data/pad_splits.json"
+  transform_name: "dual"
 
 training:
   epochs: 50
-  pad_batch_size: 256
+  pad_batch_size: 128
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 10
 
-data:
-  split_path: "data/pad_splits.json"
+model:
+  model_name: "dualvit"
+  pretrained: true
+  branch_a_num_classes: 256
+  branch_b_num_classes: 1
+  head_hidden_dim: 256
+  head_drop_rate: 0.5
+  ckpt_path: null
+
+optimizer:
+  opt_name: "adamw"
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+
+scheduler:
+  sched_name: "cosine"
+  warmup_epochs: 3
+  min_lr: 1.0e-5
 
 output:
   checkpoint_dir: "ckpts/pad/"
   best_model_name: "best_model.pth"
 
 evaluation:
-  pad_batch_size: 256
+  pad_batch_size: 128

@@ -7,18 +7,17 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-import wandb
 from data import PADDataset
-from model import get_model
-from schedulers import cosine_warmup_scheduler
+from metrics import compute_pad_metrics
+from models import get_model
+from schedulers import get_scheduler
 from transforms import get_transforms
 
 # ---------------------------------------------------------------------------
@@ -58,6 +57,20 @@ def _unwrap(module):
 
 
 # ---------------------------------------------------------------------------
+# Optimizer Selection
+# ---------------------------------------------------------------------------
+
+
+def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
+    if opt_name == "adamw":
+        return torch.optim.AdamW(
+            parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
+        )
+
+    raise ValueError("Unknown optimizer: " + opt_name)
+
+
+# ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
 
@@ -69,14 +82,10 @@ def evaluate(
     device: torch.device,
     epoch: int,
 ) -> dict[str, float]:
-    """Evaluate PAD. Compute APCER, BPCER, and ACE."""
     model.eval()
 
-    if len(val_loader.dataset) == 0:
-        return {"val/loss": 0.0, "val/apcer": 0.0, "val/bpcer": 0.0, "val/ace": 0.0}
-
     total_loss = 0.0
-    all_preds, all_labels = [], []
+    all_probs, all_labels = [], []
 
     pbar = tqdm(
         val_loader,
@@ -92,36 +101,23 @@ def evaluate(
 
         with torch.autocast(device_type="cuda"):
             _, logits = model(images, branch="b")
-            loss = F.cross_entropy(logits, labels)
+            loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         total_loss += loss.item()
 
-        preds = logits.argmax(dim=1).cpu().numpy()
-        all_preds.append(preds)
+        probs = torch.sigmoid(logits)
+        all_probs.append(probs.cpu().numpy())
         all_labels.append(labels.cpu().numpy())
-
-    all_preds = np.concatenate(all_preds)
-    all_labels = np.concatenate(all_labels)
 
     avg_loss = total_loss / len(val_loader)
 
-    # APCER: attack presentation classification error rate
-    # (spoof samples classified as live)
-    spoof_mask = all_labels == 1
-    apcer = (all_preds[spoof_mask] == 0).mean() if spoof_mask.any() else 0.0
-
-    # BPCER: bona fide presentation classification error rate
-    # (live samples classified as spoof)
-    live_mask = all_labels == 0
-    bpcer = (all_preds[live_mask] == 1).mean() if live_mask.any() else 0.0
-
-    ace = (apcer + bpcer) / 2.0
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+    metrics = compute_pad_metrics(all_labels, all_probs)
 
     return {
-        "val/loss": avg_loss,
-        "val/apcer": float(apcer),
-        "val/bpcer": float(bpcer),
-        "val/ace": float(ace),
+        "loss": avg_loss,
+        **metrics,
     }
 
 
@@ -133,8 +129,8 @@ def evaluate(
 def load_checkpoint(
     path: str,
     model: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
@@ -169,8 +165,8 @@ def save_checkpoint(
     path: str,
     epoch: int,
     model: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     ace: float,
 ) -> None:
@@ -199,28 +195,28 @@ def save_checkpoint(
 
 
 def save_best(
-    ckpt_dir: str, best_name: str, epoch: int, model: DDP, metrics: dict
+    ckpt_dir: str, best_name: str, epoch: int, model: DDP, ace: float
 ) -> None:
     path = os.path.join(ckpt_dir, best_name)
     torch.save(
         {
             "epoch": epoch,
             "model": _unwrap(model).state_dict(),
-            "metrics": metrics,
+            "ace": ace,
         },
         path,
     )
-    tqdm.write(f"  [best model] ACE={metrics['val/ace']:.4f} saved → {path}")
+    tqdm.write(f"  [best model] ACE={ace:.2%} saved → {path}")
 
     if wandb.run is not None:
         artifact = wandb.Artifact(
             name="best-model",
             type="model",
-            metadata={"epoch": epoch, **metrics},
+            metadata={"epoch": epoch, "ace": ace},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
-        wandb.run.summary["best_val_ace"] = metrics["val/ace"]
+        wandb.run.summary["best_val_ace"] = ace
         wandb.run.summary["best_val_ace_epoch"] = epoch
         tqdm.write("  [wandb] best-model artifact logged")
 
@@ -234,14 +230,13 @@ def train_one_epoch(
     model: DDP,
     train_loader: DataLoader,
     train_sampler: DistributedSampler,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     device: torch.device,
     epoch: int,
 ) -> float:
     model.train()
-
     train_sampler.set_epoch(epoch)
 
     total_loss = 0.0
@@ -262,7 +257,7 @@ def train_one_epoch(
 
         with torch.autocast(device_type="cuda"):
             _, logits = model(images, branch="b")
-            loss = F.cross_entropy(logits, labels)
+            loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         scaler.scale(loss).backward()
 
@@ -293,7 +288,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     general_cfg = cfg["general"]
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
-    training_cfg = cfg["training"]
+    train_cfg = cfg["training"]
     opt_cfg = cfg["optimizer"]
     sched_cfg = cfg["scheduler"]
     output_cfg = cfg["output"]
@@ -311,10 +306,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(project=wandb_cfg.get("project", "PAD"), config=cfg)
+        wandb.init(project=wandb_cfg["project"], config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
-    train_transform, eval_transform = get_transforms("all")
+    train_transform, eval_transform, _ = get_transforms(data_cfg["transform_name"])
 
     # ── Datasets ──────────────────────────────────────────────────────────
     train_dataset = PADDataset(
@@ -342,17 +337,17 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     train_loader = DataLoader(
         train_dataset,
-        batch_size=training_cfg["pad_batch_size"],
+        batch_size=train_cfg["pad_batch_size"],
         sampler=train_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=training_cfg["pad_batch_size"],
+        batch_size=train_cfg["pad_batch_size"],
         shuffle=False,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
@@ -374,19 +369,16 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"[model] {model_cfg['model_name']}  ({n_params:.2f}M params)")
 
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
-    optimizer = AdamW(
-        model.parameters(),
-        lr=opt_cfg["lr"],
-        weight_decay=opt_cfg["weight_decay"],
+    optimizer = get_optimizer(
+        opt_name=opt_cfg["opt_name"], parameters=model.parameters(), opt_cfg=opt_cfg
     )
 
-    total_iters = training_cfg["epochs"] * len(train_loader)
-    warmup_iters = sched_cfg["warmup_epochs"] * len(train_loader)
-    scheduler = cosine_warmup_scheduler(
-        optimizer,
-        warmup_iters=warmup_iters,
-        total_iters=total_iters,
-        min_lr=sched_cfg["min_lr"],
+    scheduler = get_scheduler(
+        sched_name=sched_cfg["sched_name"],
+        optimizer=optimizer,
+        iters=len(train_loader),
+        epochs=train_cfg["epochs"],
+        sched_cfg=sched_cfg,
     )
 
     scaler = torch.amp.GradScaler("cuda")
@@ -411,7 +403,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print("=" * 60)
 
     epoch_pbar = tqdm(
-        range(start_epoch, training_cfg["epochs"] + 1),
+        range(start_epoch, train_cfg["epochs"] + 1),
         desc="Training",
         unit="epoch",
         disable=not is_main(),
@@ -436,39 +428,46 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
             epoch_pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
-                ace=f"{metrics['val/ace']:.4f}",
+                ace=f"{metrics['ace']:.4f}",
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "
                 f"loss: {avg_loss:.4f} | "
-                f"val ACE: {metrics['val/ace']:.4f} "
-                f"(APCER={metrics['val/apcer']:.4f}, BPCER={metrics['val/bpcer']:.4f})"
+                f"val accuracy: {metrics['accuracy']:.2%} | "
+                f"val ACE: {metrics['ace']:.2%} "
+                f"(APCER={metrics['apcer']:.2%}, BPCER={metrics['bpcer']:.2%}) "
+                f"(thr={metrics['threshold']:.4f})"
             )
 
             if wandb.run is not None:
                 wandb.log(
                     {
-                        "train/loss_epoch": avg_loss,
+                        "train/loss": avg_loss,
                         "epoch": epoch,
-                        **metrics,
+                        "val/loss": metrics["loss"],
+                        "val/ace": metrics["ace"],
+                        "val/apcer": metrics["apcer"],
+                        "val/bpcer": metrics["bpcer"],
+                        "val/threshold": metrics["threshold"],
+                        "val/accuracy": metrics["accuracy"],
                     }
                 )
             else:
                 history["epoch"].append(epoch)
                 history["train_loss"].append(avg_loss)
-                history["val_ace"].append(metrics["val/ace"])
+                history["val_ace"].append(metrics["ace"])
 
-            if metrics["val/ace"] < best_ace:
-                best_ace = metrics["val/ace"]
+            if metrics["ace"] < best_ace:
+                best_ace = metrics["ace"]
                 save_best(
                     output_cfg["checkpoint_dir"],
                     output_cfg["best_model_name"],
                     epoch,
                     model,
-                    metrics,
+                    metrics["ace"],
                 )
 
-            if epoch % training_cfg["checkpoint_interval"] == 0:
+            if epoch % train_cfg["checkpoint_interval"] == 0:
                 ckpt_path = os.path.join(
                     output_cfg["checkpoint_dir"], f"checkpoint_epoch{epoch:03d}.pth"
                 )
@@ -479,14 +478,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    metrics["val/ace"],
+                    metrics["ace"],
                 )
 
         dist.barrier()
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val ACE: {best_ace:.4f}")
+        print(f"Training complete. Best val ACE: {best_ace:.2%}")
         print("=" * 60)
 
         if wandb.run is not None:

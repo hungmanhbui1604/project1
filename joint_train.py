@@ -9,20 +9,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 import yaml
-from sklearn.metrics import roc_curve
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-from data import PADDataset, RecogEvaluationDataset, RecogTrainingDataset, UniqueImageDataset
-from loss import ArcFaceLoss, UncertaintyLoss
-from model import get_model
-from schedulers import cosine_warmup_scheduler
+from data import (
+    PADDataset,
+    RecogEvaluationDataset,
+    RecogTrainingDataset,
+    UniqueImageDataset,
+)
+from losses import ArcFaceLoss, UncertaintyLoss
+from metrics import compute_pad_metrics, compute_recog_metrics
+from models import get_model
+from schedulers import get_scheduler
 from transforms import get_transforms
-
 
 # ---------------------------------------------------------------------------
 # DDP Utilities
@@ -61,30 +63,17 @@ def _unwrap(module):
 
 
 # ---------------------------------------------------------------------------
-# EER Computation
+# Optimizer Selection
 # ---------------------------------------------------------------------------
 
 
-@torch.no_grad()
-def compute_eer(
-    scores: np.ndarray,
-    labels: np.ndarray,
-) -> tuple[float, float]:
-    """Compute Equal Error Rate from similarity scores and binary labels."""
-    fmr, tar, thrs = roc_curve(labels, scores, pos_label=1)
-    fnmr = 1.0 - tar
+def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
+    if opt_name == "adamw":
+        return torch.optim.AdamW(
+            parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
+        )
 
-    asc_idx = np.argsort(thrs)
-    thrs = thrs[asc_idx]
-    fmr = fmr[asc_idx]
-    fnmr = fnmr[asc_idx]
-
-    diff = np.abs(fmr - fnmr)
-    eer_idx = int(np.argmin(diff))
-    eer = float((fmr[eer_idx] + fnmr[eer_idx]) / 2.0)
-    eer_thr = float(thrs[eer_idx])
-
-    return eer, eer_thr
+    raise ValueError("Unknown optimizer: " + opt_name)
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +88,6 @@ def get_embeddings(
     device: torch.device,
     epoch: int,
 ) -> torch.Tensor:
-    """Extract recognition embeddings (branch A) for all unique images."""
     model.eval()
 
     embed_dim = _unwrap(model).branch_a_head.out_features
@@ -143,7 +131,6 @@ def evaluate_recog(
     device: torch.device,
     epoch: int,
 ) -> tuple[float, float]:
-    """Evaluate recognition via cosine similarity and EER on validation pairs."""
     all_scores, all_labels = [], []
 
     pbar = tqdm(
@@ -157,7 +144,7 @@ def evaluate_recog(
     for idx_a, idx_b, labels in pbar:
         idx_a = idx_a.to(device, non_blocking=True)
         idx_b = idx_b.to(device, non_blocking=True)
-        
+
         emb_a = global_embeddings[idx_a]
         emb_b = global_embeddings[idx_b]
 
@@ -166,9 +153,11 @@ def evaluate_recog(
         all_scores.append(cos_sim.cpu().numpy())
         all_labels.append(labels.numpy())
 
-    eer, thr = compute_eer(np.concatenate(all_scores), np.concatenate(all_labels))
+    metrics = compute_recog_metrics(
+        np.concatenate(all_scores), np.concatenate(all_labels)
+    )
 
-    return eer, thr
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -183,14 +172,10 @@ def evaluate_pad(
     device: torch.device,
     epoch: int,
 ) -> dict[str, float]:
-    """Evaluate PAD (branch B). Compute APCER, BPCER, and ACE."""
     model.eval()
 
-    if len(val_loader.dataset) == 0:
-        return {"val/pad_loss": 0.0, "val/apcer": 0.0, "val/bpcer": 0.0, "val/ace": 0.0}
-
     total_loss = 0.0
-    all_preds, all_labels = [], []
+    all_probs, all_labels = [], []
 
     pbar = tqdm(
         val_loader,
@@ -206,35 +191,21 @@ def evaluate_pad(
 
         with torch.autocast(device_type="cuda"):
             _, logits = model(images, branch="b")
-            loss = F.cross_entropy(logits, labels)
+            loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         total_loss += loss.item()
 
-        preds = logits.argmax(dim=1).cpu().numpy()
-        all_preds.append(preds)
+        probs = torch.sigmoid(logits)
+        all_probs.append(probs.cpu().numpy())
         all_labels.append(labels.cpu().numpy())
-
-    all_preds = np.concatenate(all_preds)
-    all_labels = np.concatenate(all_labels)
 
     avg_loss = total_loss / len(val_loader)
 
-    # APCER: spoof samples classified as live
-    spoof_mask = all_labels == 1
-    apcer = (all_preds[spoof_mask] == 0).mean() if spoof_mask.any() else 0.0
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+    metrics = compute_pad_metrics(all_probs, all_labels)
 
-    # BPCER: live samples classified as spoof
-    live_mask = all_labels == 0
-    bpcer = (all_preds[live_mask] == 1).mean() if live_mask.any() else 0.0
-
-    ace = (apcer + bpcer) / 2.0
-
-    return {
-        "val/pad_loss": avg_loss,
-        "val/apcer": float(apcer),
-        "val/bpcer": float(bpcer),
-        "val/ace": float(ace),
-    }
+    return {"loss": avg_loss, **metrics}
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +217,8 @@ def load_checkpoint(
     path: str,
     model: DDP,
     arcface_loss: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
@@ -267,8 +238,8 @@ def load_checkpoint(
             scaler.load_state_dict(ckpt_dict["scaler"])
         if "epoch" in ckpt_dict:
             start_epoch = ckpt_dict["epoch"] + 1
-        if "best_avg_ace_eer" in ckpt_dict:
-            best_avg_ace_eer = ckpt_dict["best_avg_ace_eer"]
+        if "avg_ace_eer" in ckpt_dict:
+            best_avg_ace_eer = ckpt_dict["avg_ace_eer"]
 
         if is_main():
             print(f"=> Loaded checkpoint (epoch {start_epoch - 1})")
@@ -284,10 +255,10 @@ def save_checkpoint(
     epoch: int,
     model: DDP,
     arcface_loss: DDP,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
-    best_avg_ace_eer: float,
+    avg_ace_eer: float,
 ) -> None:
     torch.save(
         {
@@ -297,7 +268,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
-            "best_avg_ace_eer": best_avg_ace_eer,
+            "avg_ace_eer": avg_ace_eer,
         },
         path,
     )
@@ -307,7 +278,7 @@ def save_checkpoint(
         artifact = wandb.Artifact(
             name=f"checkpoint-epoch{epoch:03d}",
             type="checkpoint",
-            metadata={"epoch": epoch, "best_avg_ace_eer": best_avg_ace_eer},
+            metadata={"epoch": epoch, "avg_ace_eer": avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
@@ -319,31 +290,28 @@ def save_best(
     best_name: str,
     epoch: int,
     model: DDP,
-    arcface_loss: DDP,
-    metrics: dict,
+    avg_ace_eer: float,
 ) -> None:
     path = os.path.join(ckpt_dir, best_name)
     torch.save(
         {
             "epoch": epoch,
             "model": _unwrap(model).state_dict(),
-            "arcface": _unwrap(arcface_loss).state_dict(),
-            "metrics": metrics,
+            "avg_ace_eer": avg_ace_eer,
         },
         path,
     )
-    avg = metrics["val/avg_ace_eer"]
-    tqdm.write(f"  [best model] avg(ACE,EER)={avg:.4f} saved → {path}")
+    tqdm.write(f"  [best model] avg(ACE,EER)={avg_ace_eer:.2%} saved → {path}")
 
     if wandb.run is not None:
         artifact = wandb.Artifact(
             name="best-model",
             type="model",
-            metadata={"epoch": epoch, **metrics},
+            metadata={"epoch": epoch, "avg_ace_eer": avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
-        wandb.run.summary["best_val_avg_ace_eer"] = avg
+        wandb.run.summary["best_val_avg_ace_eer"] = avg_ace_eer
         wandb.run.summary["best_val_avg_ace_eer_epoch"] = epoch
         tqdm.write("  [wandb] best-model artifact logged")
 
@@ -361,18 +329,16 @@ def train_one_epoch(
     recog_sampler: DistributedSampler,
     pad_loader: DataLoader,
     pad_sampler: DistributedSampler,
-    optimizer: AdamW,
-    scheduler: LambdaLR,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     device: torch.device,
     epoch: int,
     steps_per_epoch: int,
-
 ) -> tuple[float, float]:
     model.train()
     arcface_loss.train()
     uncertainty_loss.train()
-
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
 
@@ -380,7 +346,11 @@ def train_one_epoch(
     total_recog_loss = 0.0
     total_pad_loss = 0.0
 
-    all_params = list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters())
+    all_params = (
+        list(model.parameters())
+        + list(arcface_loss.parameters())
+        + list(uncertainty_loss.parameters())
+    )
 
     # Truncate to the shorter loader via zip
     pbar = tqdm(
@@ -413,7 +383,9 @@ def train_one_epoch(
 
             # Losses
             recog_loss, _ = arcface_loss(recog_emb, recog_labels)
-            pad_loss = F.cross_entropy(pad_logits, pad_labels)
+            pad_loss = F.binary_cross_entropy_with_logits(
+                pad_logits.squeeze(1), pad_labels.float()
+            )
 
             loss = uncertainty_loss([recog_loss, pad_loss])
 
@@ -462,13 +434,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     general_cfg = cfg["general"]
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
-    training_cfg = cfg["training"]
+    train_cfg = cfg["training"]
     loss_cfg = cfg["loss"]
     opt_cfg = cfg["optimizer"]
     sched_cfg = cfg["scheduler"]
     output_cfg = cfg["output"]
     wandb_cfg = cfg["wandb"]
-    evaluation_cfg = cfg["evaluation"]
+    eval_cfg = cfg["evaluation"]
 
     # ── DDP init ────────────────────────────────────────────────────────────
     local_rank, world_size = setup_ddp()
@@ -482,12 +454,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Wandb ─────────────────────────────────────────────────────────────
     if is_main() and not no_wandb and wandb_cfg.get("api_key"):
         wandb.login(key=wandb_cfg["api_key"])
-        wandb.init(
-            project=wandb_cfg.get("project", "Joint"), config=cfg
-        )
+        wandb.init(project=wandb_cfg["project"], config=cfg)
 
     # ── Transforms ────────────────────────────────────────────────────────
-    train_transform, eval_transform = get_transforms("all")
+    train_transform, eval_transform, _ = get_transforms(data_cfg["transform_name"])
 
     # ── Recognition Datasets ─────────────────────────────────────────────
     recog_train_dataset = RecogTrainingDataset(
@@ -500,9 +470,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         n_genuine_impressions=data_cfg["n_genuine_impressions"],
         n_impostor_impressions=data_cfg["n_impostor_impressions"],
         impostor_mode=data_cfg["impostor_mode"],
-        n_impostor_subset=None
-        if data_cfg.get("n_impostor_subset") in ("None", None, "null")
-        else data_cfg["n_impostor_subset"],
+        n_impostor_subset=data_cfg["n_impostor_subset"],
         seed=general_cfg["seed"],
     )
     unique_val_dataset = UniqueImageDataset(
@@ -537,10 +505,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     recog_train_loader = DataLoader(
         recog_train_dataset,
-        batch_size=training_cfg["recog_batch_size"],
+        batch_size=train_cfg["recog_batch_size"],
         sampler=recog_train_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     pad_train_sampler = DistributedSampler(
@@ -552,19 +520,19 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     pad_train_loader = DataLoader(
         pad_train_dataset,
-        batch_size=training_cfg["pad_batch_size"],
+        batch_size=train_cfg["pad_batch_size"],
         sampler=pad_train_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     # Validation loaders
     recog_val_loader = DataLoader(
         recog_val_dataset,
-        batch_size=evaluation_cfg["recog_batch_size"],
+        batch_size=eval_cfg["recog_batch_size"],
         shuffle=False,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     unique_val_sampler = DistributedSampler(
@@ -576,24 +544,26 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=training_cfg["recog_batch_size"],
+        batch_size=train_cfg["recog_batch_size"],
         sampler=unique_val_sampler,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     pad_val_loader = DataLoader(
         pad_val_dataset,
-        batch_size=evaluation_cfg["pad_batch_size"],
+        batch_size=eval_cfg["pad_batch_size"],
         shuffle=False,
-        num_workers=training_cfg["num_workers"],
-        pin_memory=training_cfg["pin_memory"],
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
     )
 
     # ── Model ─────────────────────────────────────────────────────────────
     model = get_model(model_cfg["model_name"], model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
-        model.load_state_dict(torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"])
+        model.load_state_dict(
+            torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"]
+        )
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
@@ -612,23 +582,27 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
     uncertainty_loss = UncertaintyLoss(num_tasks=2).to(device)
-    uncertainty_loss = DDP(uncertainty_loss, device_ids=[local_rank], output_device=local_rank)
+    uncertainty_loss = DDP(
+        uncertainty_loss, device_ids=[local_rank], output_device=local_rank
+    )
 
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
-    optimizer = AdamW(
-        list(model.parameters()) + list(arcface_loss.parameters()) + list(uncertainty_loss.parameters()),
-        lr=opt_cfg["lr"],
-        weight_decay=opt_cfg["weight_decay"],
+    all_params = (
+        list(model.parameters())
+        + list(arcface_loss.parameters())
+        + list(uncertainty_loss.parameters())
+    )
+    optimizer = get_optimizer(
+        opt_name=opt_cfg["opt_name"], parameters=all_params, opt_cfg=opt_cfg
     )
 
     steps_per_epoch = min(len(recog_train_loader), len(pad_train_loader))
-    total_iters = training_cfg["epochs"] * steps_per_epoch
-    warmup_iters = sched_cfg["warmup_epochs"] * steps_per_epoch
-    scheduler = cosine_warmup_scheduler(
-        optimizer,
-        warmup_iters=warmup_iters,
-        total_iters=total_iters,
-        min_lr=sched_cfg["min_lr"],
+    scheduler = get_scheduler(
+        sched_name=sched_cfg["sched_name"],
+        optimizer=optimizer,
+        iters=steps_per_epoch,
+        epochs=train_cfg["epochs"],
+        sched_cfg=sched_cfg,
     )
 
     scaler = torch.amp.GradScaler("cuda")
@@ -651,7 +625,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 "pad_loss": [],
                 "val_eer": [],
                 "val_ace": [],
-                "val_avg": [],
+                "val_avg_ace_eer": [],
             }
 
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
@@ -661,7 +635,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print("=" * 60)
 
     epoch_pbar = tqdm(
-        range(start_epoch, training_cfg["epochs"] + 1),
+        range(start_epoch, train_cfg["epochs"] + 1),
         desc="Training",
         unit="epoch",
         disable=not is_main(),
@@ -692,37 +666,34 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         )
 
         if is_main():
-            eer, thr = evaluate_recog(recog_val_loader, global_embeddings, device, epoch)
+            recog_metrics = evaluate_recog(
+                recog_val_loader, global_embeddings, device, epoch
+            )
 
             # ── PAD evaluation ────────────────────────────────────────────
             pad_metrics = evaluate_pad(_unwrap(model), pad_val_loader, device, epoch)
 
-            ace = pad_metrics["val/ace"]
+            eer = recog_metrics["eer"]
+            ace = pad_metrics["ace"]
             avg_ace_eer = (ace + eer) / 2.0
-
-            metrics = {
-                "val/eer": eer,
-                "val/threshold": thr,
-                **pad_metrics,
-                "val/avg_ace_eer": avg_ace_eer,
-            }
 
             epoch_pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
                 recog=f"{avg_recog_loss:.4f}",
                 pad=f"{avg_pad_loss:.4f}",
-                eer=f"{eer:.4f}",
+                eer=f"{eer:.2%}",
                 ace=f"{ace:.4f}",
-                avg=f"{avg_ace_eer:.4f}",
+                avg_ace_eer=f"{avg_ace_eer:.2%}",
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "
-                f"loss: {avg_loss:.4f} | "
-                f"recog_loss: {avg_recog_loss:.4f} | pad_loss: {avg_pad_loss:.4f} | "
-                f"val EER: {eer:.4f} (thr={thr:.4f}) | "
-                f"val ACE: {ace:.4f} "
-                f"(APCER={pad_metrics['val/apcer']:.4f}, BPCER={pad_metrics['val/bpcer']:.4f}) | "
-                f"avg(ACE,EER): {avg_ace_eer:.4f}"
+                f"loss: {avg_loss:.4f} "
+                f"(recog_loss: {avg_recog_loss:.4f}, pad_loss: {avg_pad_loss:.4f}) | "
+                f"val EER: {eer:.2%} (thr={recog_metrics['eer_threshold']:.4f}) | "
+                f"val ACE: {ace:.2%} "
+                f"(APCER={pad_metrics['apcer']:.2%}, BPCER={pad_metrics['bpcer']:.2%}) "
+                f"(thr={pad_metrics['threshold']:.4f}) | "
+                f"avg(ACE,EER): {avg_ace_eer:.2%}"
             )
 
             if wandb.run is not None:
@@ -732,7 +703,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                         "train/recog_loss": avg_recog_loss,
                         "train/pad_loss": avg_pad_loss,
                         "epoch": epoch,
-                        **metrics,
+                        "val/eer": eer,
+                        "val/eer_threshold": recog_metrics["eer_threshold"],
+                        "val/ace": ace,
+                        "val/pad_threshold": pad_metrics["threshold"],
+                        "val/avg_ace_eer": avg_ace_eer,
                     }
                 )
             else:
@@ -742,7 +717,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 history["pad_loss"].append(avg_pad_loss)
                 history["val_eer"].append(eer)
                 history["val_ace"].append(ace)
-                history["val_avg"].append(avg_ace_eer)
+                history["val_avg_ace_eer"].append(avg_ace_eer)
 
             if avg_ace_eer < best_avg_ace_eer:
                 best_avg_ace_eer = avg_ace_eer
@@ -751,11 +726,10 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     output_cfg["best_model_name"],
                     epoch,
                     model,
-                    arcface_loss,
-                    metrics,
+                    avg_ace_eer,
                 )
 
-            if epoch % training_cfg["checkpoint_interval"] == 0:
+            if epoch % train_cfg["checkpoint_interval"] == 0:
                 ckpt_path = os.path.join(
                     output_cfg["checkpoint_dir"], f"checkpoint_epoch{epoch:03d}.pth"
                 )
@@ -767,14 +741,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    best_avg_ace_eer,
+                    avg_ace_eer,
                 )
 
         dist.barrier()
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val avg(ACE, EER): {best_avg_ace_eer:.4f}")
+        print(f"Training complete. Best val avg(ACE, EER): {best_avg_ace_eer:.2%}")
         print("=" * 60)
 
         if wandb.run is not None:
@@ -786,7 +760,9 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
             # Loss
             axes[0].plot(history["epoch"], history["loss"], "k-", label="Total Loss")
-            axes[0].plot(history["epoch"], history["recog_loss"], "g-", label="Recog Loss")
+            axes[0].plot(
+                history["epoch"], history["recog_loss"], "g-", label="Recog Loss"
+            )
             axes[0].plot(history["epoch"], history["pad_loss"], "r-", label="PAD Loss")
             axes[0].set_xlabel("Epoch")
             axes[0].set_ylabel("Loss")
@@ -802,7 +778,9 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             axes[1].set_title("Validation Metrics")
 
             # Combined
-            axes[2].plot(history["epoch"], history["val_avg"], "k-", label="avg(ACE, EER)")
+            axes[2].plot(
+                history["epoch"], history["val_avg"], "k-", label="avg(ACE, EER)"
+            )
             axes[2].set_xlabel("Epoch")
             axes[2].set_ylabel("avg(ACE, EER)")
             axes[2].legend()

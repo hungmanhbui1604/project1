@@ -24,7 +24,7 @@ model:
   model_name: "dualvit"
   pretrained: true
   branch_a_num_classes: 256
-  branch_b_num_classes: 2
+  branch_b_num_classes: 1
   head_hidden_dim: 256
   head_drop_rate: 0.5
   ckpt_path: null
@@ -32,7 +32,6 @@ model:
 loss:
   margin: 0.5
   scale: 32.0
-
 
 optimizer:
   opt_name: "adamw"
