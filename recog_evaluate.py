@@ -135,7 +135,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     print(f"Loading checkpoint: {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location="cpu")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["model"])
 
     # ── Evaluate ─────────────────────────────────────────────────────────

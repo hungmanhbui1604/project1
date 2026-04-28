@@ -97,13 +97,13 @@ def main(args: argparse.Namespace) -> None:
     print(f"[model] {model_cfg['model_name']} ({n_params:.2f}M params)")
 
     print(f"Loading checkpoint: {args.checkpoint_path}")
-    ckpt = torch.load(args.checkpoint_path, map_location="cpu")
+    ckpt = torch.load(args.checkpoint_path, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["model"])
 
     # ── Evaluate ─────────────────────────────────────────────────────────
     print("\nEvaluating on PAD test set...")
-    preds, labels = collect_probs(model, loader, device)
-    metrics = compute_pad_metrics(preds, labels)
+    probs, labels = collect_probs(model, loader, device)
+    metrics = compute_pad_metrics(labels, probs)
 
     # ── Report ───────────────────────────────────────────────────────────
     print("=" * 50)

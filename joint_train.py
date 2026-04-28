@@ -20,7 +20,7 @@ from data import (
     RecogTrainingDataset,
     UniqueImageDataset,
 )
-from losses import ArcFaceLoss, UncertaintyLoss
+from losses import ArcFaceLoss
 from metrics import compute_pad_metrics, compute_recog_metrics
 from models import get_model
 from schedulers import get_scheduler
@@ -203,7 +203,7 @@ def evaluate_pad(
 
     all_probs = np.concatenate(all_probs)
     all_labels = np.concatenate(all_labels)
-    metrics = compute_pad_metrics(all_probs, all_labels)
+    metrics = compute_pad_metrics(all_labels, all_probs)
 
     return {"loss": avg_loss, **metrics}
 
@@ -324,7 +324,6 @@ def save_best(
 def train_one_epoch(
     model: DDP,
     arcface_loss: DDP,
-    uncertainty_loss: DDP,
     recog_loader: DataLoader,
     recog_sampler: DistributedSampler,
     pad_loader: DataLoader,
@@ -335,10 +334,11 @@ def train_one_epoch(
     device: torch.device,
     epoch: int,
     steps_per_epoch: int,
+    recog_weight: float,
+    pad_weight: float,
 ) -> tuple[float, float]:
     model.train()
     arcface_loss.train()
-    uncertainty_loss.train()
     recog_sampler.set_epoch(epoch)
     pad_sampler.set_epoch(epoch)
 
@@ -346,11 +346,7 @@ def train_one_epoch(
     total_recog_loss = 0.0
     total_pad_loss = 0.0
 
-    all_params = (
-        list(model.parameters())
-        + list(arcface_loss.parameters())
-        + list(uncertainty_loss.parameters())
-    )
+    all_params = list(model.parameters()) + list(arcface_loss.parameters())
 
     # Truncate to the shorter loader via zip
     pbar = tqdm(
@@ -387,7 +383,7 @@ def train_one_epoch(
                 pad_logits.squeeze(1), pad_labels.float()
             )
 
-            loss = uncertainty_loss([recog_loss, pad_loss])
+            loss = recog_weight * recog_loss + pad_weight * pad_loss
 
         scaler.scale(loss).backward()
 
@@ -408,15 +404,11 @@ def train_one_epoch(
         total_pad_loss += pad_loss.item()
 
         lr_val = scheduler.get_last_lr()[0]
-        log_vars = _unwrap(uncertainty_loss).log_vars.detach().cpu().numpy()
-        weights = np.exp(-log_vars)
         pbar.set_postfix(
             total=f"{loss.item():.4f}",
             recog=f"{recog_loss.item():.4f}",
             pad=f"{pad_loss.item():.4f}",
             lr=f"{lr_val:.2e}",
-            recog_weight=f"{weights[0]:.4f}",
-            pad_weight=f"{weights[1]:.4f}",
         )
 
     avg_loss = total_loss / steps_per_epoch
@@ -581,17 +573,8 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     ).to(device)
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
-    uncertainty_loss = UncertaintyLoss(num_tasks=2).to(device)
-    uncertainty_loss = DDP(
-        uncertainty_loss, device_ids=[local_rank], output_device=local_rank
-    )
-
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
-    all_params = (
-        list(model.parameters())
-        + list(arcface_loss.parameters())
-        + list(uncertainty_loss.parameters())
-    )
+    all_params = list(model.parameters()) + list(arcface_loss.parameters())
     optimizer = get_optimizer(
         opt_name=opt_cfg["opt_name"], parameters=all_params, opt_cfg=opt_cfg
     )
@@ -645,7 +628,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         avg_loss, avg_recog_loss, avg_pad_loss = train_one_epoch(
             model,
             arcface_loss,
-            uncertainty_loss,
             recog_train_loader,
             recog_train_sampler,
             pad_train_loader,
@@ -656,6 +638,8 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             device,
             epoch,
             steps_per_epoch,
+            loss_cfg["recog_weight"],
+            loss_cfg["pad_weight"],
         )
 
         dist.barrier()
@@ -779,7 +763,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
             # Combined
             axes[2].plot(
-                history["epoch"], history["val_avg"], "k-", label="avg(ACE, EER)"
+                history["epoch"], history["val_avg_ace_eer"], "k-", label="avg(ACE, EER)"
             )
             axes[2].set_xlabel("Epoch")
             axes[2].set_ylabel("avg(ACE, EER)")
