@@ -15,12 +15,12 @@ data:
   transform_name: "dual"
 
 training:
-  epochs: 50
+  epochs: 80
   recog_batch_size: 256
   pad_batch_size: 128
   num_workers: 8
   pin_memory: true
-  checkpoint_interval: 10
+  checkpoint_interval: 20
 
 model:
   model_name: "dualvit"
@@ -44,7 +44,7 @@ optimizer:
 
 scheduler:
   sched_name: cosine
-  warmup_epochs: 3
+  warmup_epochs: 4
   min_lr: 1.0e-5
 
 output:
