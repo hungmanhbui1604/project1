@@ -28,15 +28,17 @@ class MLPHead(nn.Module):
 class DualViT(nn.Module):
     def __init__(
         self,
+        model_name="vit_small_patch16_224",
         pretrained=True,
+        shared_blocks=4,
         branch_a_num_classes=128,
-        branch_b_num_classes=2,
+        branch_b_num_classes=1,
         head_hidden_dim=256,
         head_drop_rate=0.5,
     ):
         super().__init__()
 
-        base_model = timm.create_model("vit_small_patch16_224", pretrained=pretrained)
+        base_model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
 
         self.patch_embed = base_model.patch_embed
         self.cls_token = base_model.cls_token
@@ -46,15 +48,15 @@ class DualViT(nn.Module):
 
         embed_dim = base_model.embed_dim
 
-        self.shared_blocks = base_model.blocks[:4]
+        self.shared_blocks = base_model.blocks[:shared_blocks]
 
         # --- branch A ---
-        self.branch_a_blocks = base_model.blocks[4:]
+        self.branch_a_blocks = base_model.blocks[shared_blocks:]
         self.branch_a_norm = base_model.norm
         self.branch_a_head = nn.Linear(embed_dim, branch_a_num_classes)
 
         # --- branch B ---
-        self.branch_b_blocks = copy.deepcopy(base_model.blocks[4:8])
+        self.branch_b_blocks = copy.deepcopy(base_model.blocks[shared_blocks:])
         self.branch_b_norm = copy.deepcopy(base_model.norm)
         self.branch_b_head = MLPHead(
             in_features=embed_dim,
@@ -63,52 +65,41 @@ class DualViT(nn.Module):
             drop_rate=head_drop_rate,
         )
 
-    def forward_features(self, x):
-        # embeddings
+    def shared_forward(self, x):
         x = self.patch_embed(x)
         cls_token = self.cls_token.expand(x.shape[0], -1, -1)
         x = torch.cat((cls_token, x), dim=1)
         x = self.pos_drop(x + self.pos_embed)
         x = self.norm_pre(x)
-
-        # shared blocks
         x = self.shared_blocks(x)
         return x
 
-    def forward(self, x, return_features=False, branch=None):
-        # embeddings
-        shared_features = self.forward_features(x)
+    def branch_forward(self, x, branch):
+        x = self.shared_forward(x)
+        if branch == 'a':
+            x = self.branch_a_blocks(x)
+            x = self.branch_a_norm(x)
+            out = self.branch_a_head(x[:, 0].contiguous())
+        elif branch == 'b':
+            x = self.branch_b_blocks(x)
+            x = self.branch_b_norm(x)
+            out = self.branch_b_head(x[:, 0].contiguous())
+        else:
+            raise ValueError(f"Invalid branch: {branch}")
+        return out
 
-        features = {}
-        if return_features:
-            features['layer4'] = shared_features
+    def forward(self, x):
+        shared_features = self.shared_forward(x)
 
-        branch_a_out = None
-        if branch is None or branch == 'a':
-            branch_a_x = shared_features
-            for i, blk in enumerate(self.branch_a_blocks):
-                branch_a_x = blk(branch_a_x)
-                if return_features and i == 3:
-                    features['a_layer8'] = branch_a_x
-            if return_features:
-                features['a_layer12'] = branch_a_x
+        branch_a_x = shared_features
+        branch_a_x = self.branch_a_blocks(branch_a_x)
+        branch_a_norm_x = self.branch_a_norm(branch_a_x)
+        branch_a_out = self.branch_a_head(branch_a_norm_x[:, 0].contiguous())
 
-            branch_a_norm_x = self.branch_a_norm(branch_a_x)
-            branch_a_out = self.branch_a_head(branch_a_norm_x[:, 0].contiguous())
-
-        branch_b_out = None
-        if branch is None or branch == 'b':
-            branch_b_x = shared_features
-            for i, blk in enumerate(self.branch_b_blocks):
-                branch_b_x = blk(branch_b_x)
-            if return_features:
-                features['b_layer8'] = branch_b_x
-
-            branch_b_norm_x = self.branch_b_norm(branch_b_x)
-            branch_b_out = self.branch_b_head(branch_b_norm_x[:, 0].contiguous())
-
-        if return_features:
-            return branch_a_out, branch_b_out, features
+        branch_b_x = shared_features
+        branch_b_x = self.branch_b_blocks(branch_b_x)
+        branch_b_norm_x = self.branch_b_norm(branch_b_x)
+        branch_b_out = self.branch_b_head(branch_b_norm_x[:, 0].contiguous())
 
         return branch_a_out, branch_b_out
 
@@ -116,28 +107,30 @@ class DualViT(nn.Module):
 class DualMobileViT(nn.Module):
     def __init__(
         self,
+        model_name="mobilevit_s.cvnets_in1k",
         pretrained=True,
+        shared_stages=3,
         branch_a_num_classes=128,
-        branch_b_num_classes=2,
+        branch_b_num_classes=1,
         head_hidden_dim=256,
         head_drop_rate=0.5,
     ):
         super().__init__()
 
-        base_model = timm.create_model("mobilevit_s.cvnets_in1k", pretrained=pretrained, num_classes=0)
+        base_model = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
         
         # --- Shared Part ---
         self.shared_stem = base_model.stem
-        self.shared_stages = base_model.stages[:3] 
+        self.shared_stages = base_model.stages[:shared_stages]
+        num_features = base_model.num_features
 
         # --- Branch A ---
-        self.branch_a_stages = base_model.stages[3:]
+        self.branch_a_stages = base_model.stages[shared_stages:]
         self.branch_a_final_conv = base_model.final_conv
-        num_features = base_model.num_features
         self.branch_a_head = nn.Linear(num_features, branch_a_num_classes)
 
         # --- Branch B ---
-        self.branch_b_stages = copy.deepcopy(base_model.stages[3:])
+        self.branch_b_stages = copy.deepcopy(base_model.stages[shared_stages:])
         self.branch_b_final_conv = copy.deepcopy(base_model.final_conv)
         self.branch_b_head = MLPHead(
             in_features=num_features,
@@ -146,48 +139,63 @@ class DualMobileViT(nn.Module):
             drop_rate=head_drop_rate,
         )
 
-    def forward_shared(self, x):
+    def shared_forward(self, x):
         x = self.shared_stem(x)
-        x = self.shared_stages(x)
-        return x
+        out = self.shared_stages(x)
+        return out
 
-    def forward(self, x, branch=None):
-        shared_feat = self.forward_shared(x)
+    def branch_forward(self, x, branch):
+        x = self.shared_forward(x)
+        if branch == 'a':
+            x = self.branch_a_stages(x)
+            x = self.branch_a_final_conv(x)
+            x = x.mean([-2, -1])
+            out = self.branch_a_head(x)
+        elif branch == 'b':
+            x = self.branch_b_stages(x)
+            x = self.branch_b_final_conv(x)
+            x = x.mean([-2, -1])
+            out = self.branch_b_head(x)
+        else:
+            raise ValueError(f"Invalid branch: {branch}")
+        return out
+    
+    def forward(self, x):
+        shared_features = self.shared_forward(x)
 
-        out_a = None
-        if branch is None or branch == 'a':
-            x_a = self.branch_a_stages(shared_feat)
-            x_a = self.branch_a_final_conv(x_a)
-            # Global Average Pooling
-            x_a = x_a.mean([-2, -1]) 
-            out_a = self.branch_a_head(x_a)
+        branch_a_x = shared_features
+        branch_a_x = self.branch_a_stages(branch_a_x)
+        branch_a_x = self.branch_a_final_conv(branch_a_x)
+        branch_a_x = branch_a_x.mean([-2, -1])
+        branch_a_out = self.branch_a_head(branch_a_x)
 
-        out_b = None
-        if branch is None or branch == 'b':
-            x_b = self.branch_b_stages(shared_feat)
-            x_b = self.branch_b_final_conv(x_b)
-            # Global Average Pooling
-            x_b = x_b.mean([-2, -1])
-            out_b = self.branch_b_head(x_b)
+        branch_b_x = shared_features
+        branch_b_x = self.branch_b_stages(branch_b_x)
+        branch_b_x = self.branch_b_final_conv(branch_b_x)
+        branch_b_x = branch_b_x.mean([-2, -1])
+        branch_b_out = self.branch_b_head(branch_b_x)
 
-        return out_a, out_b
+        return branch_a_out, branch_b_out
 
 
 def get_model(model_name, model_cfg):
-    model_name_lower = model_name.lower()
-    if model_name_lower == 'dualvit':
-        return DualViT(
+    if "mobilevit_" in model_name:
+        return DualMobileViT(
+            model_name=model_name,
             pretrained=model_cfg.get("pretrained", True),
+            shared_stages=model_cfg.get("shared_stages", 3),
             branch_a_num_classes=model_cfg.get("branch_a_num_classes", 256),
-            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 2),
+            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 1),
             head_hidden_dim=model_cfg.get("head_hidden_dim", 256),
             head_drop_rate=model_cfg.get("head_drop_rate", 0.5),
         )
-    elif model_name_lower == 'dualmobilevit':
-        return DualMobileViT(
+    elif "vit_" in model_name:
+        return DualViT(
+            model_name=model_name,
             pretrained=model_cfg.get("pretrained", True),
+            shared_blocks=model_cfg.get("shared_blocks", 4),
             branch_a_num_classes=model_cfg.get("branch_a_num_classes", 256),
-            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 2),
+            branch_b_num_classes=model_cfg.get("branch_b_num_classes", 1),
             head_hidden_dim=model_cfg.get("head_hidden_dim", 256),
             head_drop_rate=model_cfg.get("head_drop_rate", 0.5),
         )

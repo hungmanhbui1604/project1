@@ -17,8 +17,9 @@ training:
   checkpoint_interval: 10
 
 model:
-  model_name: "dualvit"
+  model_name: "mobilevit_s.cvnets_in1k"
   pretrained: true
+  shared_stages: 4
   branch_a_num_classes: 256
   branch_b_num_classes: 1
   head_hidden_dim: 256
@@ -26,7 +27,7 @@ model:
   ckpt_path: null
 
 optimizer:
-  opt_name: "adamw"
+  opt_name: "adam"
   lr: 1.0e-4
   weight_decay: 1.0e-4
 

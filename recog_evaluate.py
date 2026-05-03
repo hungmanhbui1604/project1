@@ -45,7 +45,7 @@ def collect_scores(
     for idxs, imgs in tqdm(unique_loader, desc="Extracting embeddings", unit="batch"):
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb, _ = model(imgs, branch="a")
+            emb = model.branch_forward(imgs, branch="a")
         emb = F.normalize(emb, dim=1).float()
         embeddings[idxs] = emb
 

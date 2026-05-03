@@ -14,15 +14,16 @@ data:
   transform_name: "dual"
 
 training:
-  epochs: 50
+  epochs: 80
   recog_batch_size: 256
   num_workers: 8
   pin_memory: true
-  checkpoint_interval: 10
+  checkpoint_interval: 20
 
 model:
-  model_name: "dualvit"
+  model_name: "mobilevit_s.cvnets_in1k"
   pretrained: true
+  shared_stages: 4
   branch_a_num_classes: 256
   branch_b_num_classes: 1
   head_hidden_dim: 256
@@ -34,7 +35,7 @@ loss:
   scale: 32.0
 
 optimizer:
-  opt_name: "adamw"
+  opt_name: "adam"
   lr: 1.0e-4
   weight_decay: 1.0e-4
 

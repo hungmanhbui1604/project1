@@ -42,7 +42,7 @@ def collect_probs(
         images = images.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits = model(images, branch="b")
+            logits = model.branch_forward(images, branch="b")
 
         probs = torch.sigmoid(logits)
 

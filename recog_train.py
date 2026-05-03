@@ -66,8 +66,12 @@ def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
         return torch.optim.AdamW(
             parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
         )
-
-    raise ValueError("Unknown optimizer: " + opt_name)
+    elif opt_name == "adam":
+        return torch.optim.Adam(
+            parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
+        )
+    else:
+        raise ValueError("Unknown optimizer: " + opt_name)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +105,7 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb, _ = model(imgs, branch="a")
+            emb = model.branch_forward(imgs, branch="a")
         emb = F.normalize(emb, dim=1).float()
 
         local_embeddings[idxs] = emb
@@ -301,7 +305,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type="cuda"):
-            embeddings, _ = model(images, branch="a")
+            embeddings, _ = model(images)
             loss, _ = arcface_loss(embeddings, labels)
 
         scaler.scale(loss).backward()

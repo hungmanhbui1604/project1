@@ -72,8 +72,12 @@ def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
         return torch.optim.AdamW(
             parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
         )
-
-    raise ValueError("Unknown optimizer: " + opt_name)
+    elif opt_name == "adam":
+        return torch.optim.Adam(
+            parameters, lr=opt_cfg["lr"], weight_decay=opt_cfg["weight_decay"]
+        )
+    else:
+        raise ValueError("Unknown optimizer: " + opt_name)
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +111,7 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb_a, _ = model(imgs, branch="a")
+            emb_a = model.branch_forward(imgs, branch="a")
         emb_a = F.normalize(emb_a, dim=1).float()
 
         local_embeddings[idxs] = emb_a
@@ -190,7 +194,7 @@ def evaluate_pad(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits = model(images, branch="b")
+            logits = model.branch_forward(images, branch="b")
             loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         total_loss += loss.item()
