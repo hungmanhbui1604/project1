@@ -17,9 +17,9 @@ training:
   checkpoint_interval: 10
 
 model:
-  model_name: "mobilevit_s.cvnets_in1k"
+  model_name: "mobilevitv2_100.cvnets_in1k"
   pretrained: true
-  shared_stages: 4
+  shared_stages: 3
   branch_a_num_classes: 256
   branch_b_num_classes: 1
   head_hidden_dim: 256

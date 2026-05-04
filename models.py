@@ -179,7 +179,7 @@ class DualMobileViT(nn.Module):
 
 
 def get_model(model_name, model_cfg):
-    if "mobilevit_" in model_name:
+    if "mobilevit" in model_name:
         return DualMobileViT(
             model_name=model_name,
             pretrained=model_cfg.get("pretrained", True),
@@ -189,7 +189,7 @@ def get_model(model_name, model_cfg):
             head_hidden_dim=model_cfg.get("head_hidden_dim", 256),
             head_drop_rate=model_cfg.get("head_drop_rate", 0.5),
         )
-    elif "vit_" in model_name:
+    elif "vit" in model_name:
         return DualViT(
             model_name=model_name,
             pretrained=model_cfg.get("pretrained", True),
