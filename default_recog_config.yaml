@@ -11,17 +11,19 @@ data:
   n_impostor_impressions: 1
   impostor_mode: "all"
   n_impostor_subset: null
+  gallery_per_id: 1
+  probe_per_id: null
   transform_name: "dual"
 
 training:
-  epochs: 80
+  epochs: 200
   recog_batch_size: 256
   num_workers: 8
   pin_memory: true
-  checkpoint_interval: 20
+  checkpoint_interval: 40
 
 model:
-  model_name: "mobilevitv2_100.cvnets_in1kk"
+  model_name: "mobilevitv2_100.cvnets_in1k"
   pretrained: true
   shared_stages: 3
   branch_a_num_classes: 256
@@ -41,7 +43,7 @@ optimizer:
 
 scheduler:
   sched_name: "cosine"
-  warmup_epochs: 3
+  warmup_epochs: 10
   min_lr: 1.0e-5
 
 output:

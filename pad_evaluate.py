@@ -103,23 +103,29 @@ def main(args: argparse.Namespace) -> None:
     # ── Evaluate ─────────────────────────────────────────────────────────
     print("\nEvaluating on PAD test set...")
     probs, labels = collect_probs(model, loader, device)
-    metrics = compute_pad_metrics(labels, probs)
+    metrics = compute_pad_metrics(probs, labels)
 
     # ── Report ───────────────────────────────────────────────────────────
+    n_live = sum(1 for (_, label) in dataset.samples if label == 0)
+    n_spoof = len(dataset) - n_live
     print("=" * 50)
     print(f"Split path: {args.split_path}")
+    print("-" * 50)
+    print(f"Total samples: {len(dataset)} (live={n_live}, spoof={n_spoof})")
     print("-" * 50)
     print(f"Threshold : {metrics['threshold']:.4f}")
     print(f"Accuracy  : {metrics['accuracy']:.2%}")
     print(f"ACE       : {metrics['ace']:.2%}")
     print(f"APCER     : {metrics['apcer']:.2%}")
     print(f"BPCER     : {metrics['bpcer']:.2%}")
-    print("-" * 50)
     print("=" * 50)
 
     # ── Save JSON ────────────────────────────────────────────────────────
-    results = {
+    summary = {
         "split_path": args.split_path,
+        "n_samples": len(dataset),
+        "n_live": n_live,
+        "n_spoof": n_spoof,
         "threshold": metrics["threshold"],
         "accuracy": metrics["accuracy"],
         "ace": metrics["ace"],
@@ -129,7 +135,7 @@ def main(args: argparse.Namespace) -> None:
 
     json_path = os.path.join(args.output_dir, "pad_metrics.json")
     with open(json_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(summary, f, indent=2)
     print(f"\nResults saved → {json_path}")
 
 

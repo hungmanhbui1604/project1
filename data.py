@@ -183,7 +183,7 @@ def create_recog_splits(
             if valid_fingers:
                 filtered_subject_finger_paths[subject] = valid_fingers
 
-        print(f"Removed {removed_count} fingers that did not meet the criteria.")
+        print(f"Removed {removed_count:,} fingers that did not meet the criteria.")
         return filtered_subject_finger_paths
 
     assert len(split_ratio) == 3, "split_ratio must have 3 values (train, val, test)"
@@ -265,10 +265,10 @@ def create_recog_splits(
     )
 
     print(
-        f"• Train: {splits['train_samples']} samples ({splits['train_subjects']} subjects / {splits['train_fingers']} fingers)\n"
-        f"• Val: {splits['val_samples']} samples ({splits['val_subjects']} subjects / {splits['val_fingers']} fingers)\n"
-        f"• Test: {splits['test_samples']} samples ({splits['test_subjects']} subjects / {splits['test_fingers']} fingers)\n"
-        f"Total: {splits['total_samples']} samples ({splits['total_subjects']} subjects / {splits['total_fingers']} fingers)"
+        f"• Train: {splits['train_samples']:,} samples ({splits['train_subjects']:,} subjects / {splits['train_fingers']:,} fingers)\n"
+        f"• Val: {splits['val_samples']:,} samples ({splits['val_subjects']:,} subjects / {splits['val_fingers']:,} fingers)\n"
+        f"• Test: {splits['test_samples']:,} samples ({splits['test_subjects']:,} subjects / {splits['test_fingers']:,} fingers)\n"
+        f"Total: {splits['total_samples']:,} samples ({splits['total_subjects']:,} subjects / {splits['total_fingers']:,} fingers)"
     )
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -304,7 +304,7 @@ def create_pad_splits(
             if valid_fingers:
                 filtered_subject_finger_paths[subject] = valid_fingers
 
-        print(f"Removed {removed_count} fingers that did not meet the criteria.")
+        print(f"Removed {removed_count:,} fingers that did not meet the criteria.")
         return filtered_subject_finger_paths
 
     assert len(split_ratio) == 3, "split_ratio must have 3 values (train, val, test)"
@@ -455,18 +455,18 @@ def create_pad_splits(
 
     print(
         "Recog:\n"
-        f"• Train: {recog_splits['train_samples']} samples ({recog_splits['train_subjects']} subjects / {recog_splits['train_fingers']} fingers)\n"
-        f"• Val: {recog_splits['val_samples']} samples ({recog_splits['val_subjects']} subjects / {recog_splits['val_fingers']} fingers)\n"
-        f"• Test: {recog_splits['test_samples']} samples ({recog_splits['test_subjects']} subjects / {recog_splits['test_fingers']} fingers)\n"
-        f"Total: {recog_splits['total_samples']} samples ({recog_splits['total_subjects']} subjects / {recog_splits['total_fingers']} fingers)",
+        f"• Train: {recog_splits['train_samples']:,} samples ({recog_splits['train_subjects']:,} subjects / {recog_splits['train_fingers']:,} fingers)\n"
+        f"• Val: {recog_splits['val_samples']:,} samples ({recog_splits['val_subjects']:,} subjects / {recog_splits['val_fingers']:,} fingers)\n"
+        f"• Test: {recog_splits['test_samples']:,} samples ({recog_splits['test_subjects']:,} subjects / {recog_splits['test_fingers']:,} fingers)\n"
+        f"Total: {recog_splits['total_samples']:,} samples ({recog_splits['total_subjects']:,} subjects / {recog_splits['total_fingers']:,} fingers)",
     )
 
     print(
         "PAD:\n"
-        f"• Train: {pad_splits['train_samples']} samples ({pad_splits['train_subjects']} subjects / {pad_splits['train_fingers']} fingers)\n"
-        f"• Val: {pad_splits['val_samples']} samples ({pad_splits['val_subjects']} subjects / {pad_splits['val_fingers']} fingers)\n"
-        f"• Test: {pad_splits['test_samples']} samples ({pad_splits['test_subjects']} subjects / {pad_splits['test_fingers']} fingers)\n"
-        f"Total: {pad_splits['total_samples']} samples ({pad_splits['total_subjects']} subjects / {pad_splits['total_fingers']} fingers)",
+        f"• Train: {pad_splits['train_samples']:,} samples ({pad_splits['train_subjects']:,} subjects / {pad_splits['train_fingers']:,} fingers)\n"
+        f"• Val: {pad_splits['val_samples']:,} samples ({pad_splits['val_subjects']:,} subjects / {pad_splits['val_fingers']:,} fingers)\n"
+        f"• Test: {pad_splits['test_samples']:,} samples ({pad_splits['test_subjects']:,} subjects / {pad_splits['test_fingers']:,} fingers)\n"
+        f"Total: {pad_splits['total_samples']:,} samples ({pad_splits['total_subjects']:,} subjects / {pad_splits['total_fingers']:,} fingers)",
     )
 
     os.makedirs(os.path.dirname(recog_output_path), exist_ok=True)
@@ -506,7 +506,7 @@ def create_LivDet_splits(
             if valid_fingers:
                 filtered_subject_finger_paths[subject] = valid_fingers
 
-        print(f"Removed {removed_count} fingers that did not meet the criteria.")
+        print(f"Removed {removed_count:,} fingers that did not meet the criteria.")
         return filtered_subject_finger_paths
 
     assert 0.0 <= val_ratio <= 1.0, "val_ratio must be between 0 and 1"
@@ -673,18 +673,18 @@ def create_LivDet_splits(
 
     print(
         "Recog:\n"
-        f"• Train: {recog_splits['train_samples']} samples ({recog_splits['train_subjects']} subjects / {recog_splits['train_fingers']} fingers)\n"
-        f"• Val: {recog_splits['val_samples']} samples ({recog_splits['val_subjects']} subjects / {recog_splits['val_fingers']} fingers)\n"
-        f"• Test: {recog_splits['test_samples']} samples ({recog_splits['test_subjects']} subjects / {recog_splits['test_fingers']} fingers)\n"
-        f"Total: {recog_splits['total_samples']} samples ({recog_splits['total_subjects']} subjects / {recog_splits['total_fingers']} fingers)",
+        f"• Train: {recog_splits['train_samples']:,} samples ({recog_splits['train_subjects']:,} subjects / {recog_splits['train_fingers']:,} fingers)\n"
+        f"• Val: {recog_splits['val_samples']:,} samples ({recog_splits['val_subjects']:,} subjects / {recog_splits['val_fingers']:,} fingers)\n"
+        f"• Test: {recog_splits['test_samples']:,} samples ({recog_splits['test_subjects']:,} subjects / {recog_splits['test_fingers']:,} fingers)\n"
+        f"Total: {recog_splits['total_samples']:,} samples ({recog_splits['total_subjects']:,} subjects / {recog_splits['total_fingers']:,} fingers)",
     )
 
     print(
         "PAD:\n"
-        f"• Train: {pad_splits['train_samples']} samples ({pad_splits['train_subjects']} subjects / {pad_splits['train_fingers']} fingers)\n"
-        f"• Val: {pad_splits['val_samples']} samples ({pad_splits['val_subjects']} subjects / {pad_splits['val_fingers']} fingers)\n"
-        f"• Test: {pad_splits['test_samples']} samples ({pad_splits['test_subjects']} subjects / {pad_splits['test_fingers']} fingers)\n"
-        f"Total: {pad_splits['total_samples']} samples ({pad_splits['total_subjects']} subjects / {pad_splits['total_fingers']} fingers)",
+        f"• Train: {pad_splits['train_samples']:,} samples ({pad_splits['train_subjects']:,} subjects / {pad_splits['train_fingers']:,} fingers)\n"
+        f"• Val: {pad_splits['val_samples']:,} samples ({pad_splits['val_subjects']:,} subjects / {pad_splits['val_fingers']:,} fingers)\n"
+        f"• Test: {pad_splits['test_samples']:,} samples ({pad_splits['test_subjects']:,} subjects / {pad_splits['test_fingers']:,} fingers)\n"
+        f"Total: {pad_splits['total_samples']:,} samples ({pad_splits['total_subjects']:,} subjects / {pad_splits['total_fingers']:,} fingers)",
     )
 
     os.makedirs(os.path.dirname(recog_output_path), exist_ok=True)
@@ -751,10 +751,10 @@ def unify_recog_splits(split_paths: list, output_path: str = "data/splits.json")
     )
 
     print(
-        f"• Train: {unified['train_samples']} samples ({unified['train_subjects']} subjects / {unified['train_fingers']} fingers)\n"
-        f"• Val: {unified['val_samples']} samples ({unified['val_subjects']} subjects / {unified['val_fingers']} fingers)\n"
-        f"• Test: {unified['test_samples']} samples ({unified['test_subjects']} subjects / {unified['test_fingers']} fingers)\n"
-        f"Total: {unified['total_samples']} samples ({unified['total_subjects']} subjects / {unified['total_fingers']} fingers)"
+        f"• Train: {unified['train_samples']:,} samples ({unified['train_subjects']:,} subjects / {unified['train_fingers']:,} fingers)\n"
+        f"• Val: {unified['val_samples']:,} samples ({unified['val_subjects']:,} subjects / {unified['val_fingers']:,} fingers)\n"
+        f"• Test: {unified['test_samples']:,} samples ({unified['test_subjects']:,} subjects / {unified['test_fingers']:,} fingers)\n"
+        f"Total: {unified['total_samples']:,} samples ({unified['total_subjects']:,} subjects / {unified['total_fingers']:,} fingers)"
     )
 
     return unified
@@ -839,10 +839,10 @@ def unify_pad_splits(
     )
 
     print(
-        f"• Train: {unified['train_samples']} samples ({unified['train_subjects']} subjects / {unified['train_fingers']} fingers)\n"
-        f"• Val: {unified['val_samples']} samples ({unified['val_subjects']} subjects / {unified['val_fingers']} fingers)\n"
-        f"• Test: {unified['test_samples']} samples ({unified['test_subjects']} subjects / {unified['test_fingers']} fingers)\n"
-        f"Total: {unified['total_samples']} samples ({unified['total_subjects']} subjects / {unified['total_fingers']} fingers)"
+        f"• Train: {unified['train_samples']:,} samples ({unified['train_subjects']:,} subjects / {unified['train_fingers']:,} fingers)\n"
+        f"• Val: {unified['val_samples']:,} samples ({unified['val_subjects']:,} subjects / {unified['val_fingers']:,} fingers)\n"
+        f"• Test: {unified['test_samples']:,} samples ({unified['test_subjects']:,} subjects / {unified['test_fingers']:,} fingers)\n"
+        f"Total: {unified['total_samples']:,} samples ({unified['total_subjects']:,} subjects / {unified['total_fingers']:,} fingers)"
     )
 
     return unified
@@ -880,10 +880,10 @@ class RecogTrainingDataset(Dataset):
         return img, label
 
     def __repr__(self):
-        return f"RecogTrainingDataset: {len(self)} samples ({self.n_ids} ids)"
+        return f"RecogTrainingDataset: {len(self):,} samples ({self.n_ids:,} ids)"
 
 
-class RecogEvaluationDataset(Dataset):
+class AuthenticationEvaluationDataset(Dataset):
     def __init__(
         self,
         split_path: str = "data/splits.json",
@@ -958,14 +958,10 @@ class RecogEvaluationDataset(Dataset):
         return self.pairs[idx]
 
     def __repr__(self):
-        return (
-            f"RecogEvaluationDataset:\n"
-            f"• n_pairs: {len(self)} (genuine: {self.n_genuine}, impostor: {self.n_impostor})\n"
-            f"• n_ids: {self.n_ids}"
-        )
+        return f"AuthenticationEvaluationDataset ({self.n_ids:,} ids): {len(self):,} pairs (genuine: {self.n_genuine:,}, impostor: {self.n_impostor:,})"
 
 
-class UniqueImageDataset(Dataset):
+class UniqueFingerprintDataset(Dataset):
     def __init__(
         self, idx_to_path: dict[str, int], transform: Optional[Callable] = None
     ):
@@ -980,6 +976,79 @@ class UniqueImageDataset(Dataset):
         if self.transform:
             img = self.transform(img)
         return idx, img
+
+
+class IdentificationEvaluationDataset(Dataset):
+    def __init__(
+        self,
+        split_path: str = "data/splits.json",
+        split: str = "test",
+        gallery_per_id: int = 1,
+        probe_per_id: Optional[int] = None,
+        transform: Optional[Callable] = None,
+        seed: int = 42,
+    ):
+        assert split in ("test", "val"), f"Invalid split: {split}"
+        self.transform = transform
+
+        with open(split_path, "r") as f:
+            splits = json.load(f)
+
+        finger_to_paths = splits[split]
+        self.n_ids = len(finger_to_paths)
+
+        self.gallery_paths = []
+        self.gallery_labels = []
+        self.probe_paths = []
+        self.probe_labels = []
+
+        rng = random.Random(seed)
+
+        unique_ids = sorted(finger_to_paths.keys())
+        id_to_label = {id_: idx for idx, id_ in enumerate(unique_ids)}
+
+        for finger, paths in finger_to_paths.items():
+            label = id_to_label[finger]
+
+            sorted_paths = sorted(paths)
+            rng.shuffle(sorted_paths)
+
+            g_paths = sorted_paths[:gallery_per_id]
+            if probe_per_id is not None:
+                p_paths = sorted_paths[gallery_per_id : gallery_per_id + probe_per_id]
+            else:
+                p_paths = sorted_paths[gallery_per_id:]
+
+            self.gallery_paths.extend(g_paths)
+            self.gallery_labels.extend([label] * len(g_paths))
+            self.probe_paths.extend(p_paths)
+            self.probe_labels.extend([label] * len(p_paths))
+
+        self.all_paths = self.gallery_paths + self.probe_paths
+        self.all_labels = self.gallery_labels + self.probe_labels
+
+        self.n_gallery = len(self.gallery_paths)
+        self.n_probes = len(self.probe_paths)
+
+    def __len__(self):
+        return len(self.all_paths)
+
+    def __getitem__(self, idx):
+        path = self.all_paths[idx]
+        label = self.all_labels[idx]
+        img = Image.open(path).convert("RGB")
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img, label, idx
+
+    def __repr__(self):
+        return (
+            f"IdentificationEvaluationDataset ({self.n_ids:,} ids):\n"
+            f"• Gallery samples: {self.n_gallery:,}\n"
+            f"• Probe samples: {self.n_probes:,}"
+        )
 
 
 class PADDataset(Dataset):
@@ -1012,7 +1081,9 @@ class PADDataset(Dataset):
     def __repr__(self):
         n_live = sum(1 for (_, label) in self.samples if label == 0)
         n_spoof = len(self) - n_live
-        return f"PADDataset: {len(self)} samples (live: {n_live}, spoof: {n_spoof})"
+        return (
+            f"PADDataset: {len(self):,} samples (live: {n_live:,}, spoof: {n_spoof:,})"
+        )
 
 
 if __name__ == "__main__":
@@ -1145,7 +1216,7 @@ if __name__ == "__main__":
     print(recog_train_dataset)
     print()
 
-    recog_val_dataset = RecogEvaluationDataset(
+    recog_val_dataset = AuthenticationEvaluationDataset(
         split_path="data/recog_splits.json",
         split="val",
         n_genuine_impressions=32,
@@ -1157,7 +1228,7 @@ if __name__ == "__main__":
     print(recog_val_dataset)
     print()
 
-    recog_test_dataset = RecogEvaluationDataset(
+    recog_test_dataset = AuthenticationEvaluationDataset(
         split_path="data/recog_splits.json",
         split="test",
         n_genuine_impressions=32,

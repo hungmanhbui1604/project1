@@ -2,7 +2,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, auc, roc_curve
 
 
-def compute_pad_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict:
+def compute_pad_metrics(probabilities: np.ndarray, labels: np.ndarray) -> dict:
     # Compute ROC
     fpr, tpr, thresholds = roc_curve(labels, probabilities)
 
@@ -28,7 +28,7 @@ def compute_pad_metrics(labels: np.ndarray, probabilities: np.ndarray) -> dict:
     }
 
 
-def compute_recog_metrics(
+def compute_authentication_metrics(
     scores: np.ndarray,
     labels: np.ndarray,
 ) -> dict:
@@ -117,3 +117,23 @@ def compute_recog_metrics(
         "tar_at_far_0.01": tar_at_far[0.01],
         "tar_at_far_0.001": tar_at_far[0.001],
     }
+
+
+def compute_identification_metrics(
+    sim_mat: np.ndarray,
+    probe_labels: np.ndarray,
+    gallery_labels: np.ndarray,
+    top_k: tuple = (1, 5, 10)
+) -> dict:
+    sorted_indices = np.argsort(-sim_mat, axis=1)
+
+    pred_labels = gallery_labels[sorted_indices]
+
+    matches = (pred_labels == probe_labels[:, None])
+
+    metrics = {}
+    for k in top_k:
+        rank_k = matches[:, :k].any(axis=1).mean()
+        metrics[f"rank_{k}"] = float(rank_k)
+
+    return metrics

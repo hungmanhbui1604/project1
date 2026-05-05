@@ -16,12 +16,12 @@ from tqdm import tqdm
 
 from data import (
     PADDataset,
-    RecogEvaluationDataset,
+    AuthenticationEvaluationDataset,
     RecogTrainingDataset,
-    UniqueImageDataset,
+    UniqueFingerprintDataset,
 )
 from losses import ArcFaceLoss
-from metrics import compute_pad_metrics, compute_recog_metrics
+from metrics import compute_pad_metrics, compute_authentication_metrics
 from models import get_model
 from schedulers import get_scheduler
 from transforms import get_transforms
@@ -157,7 +157,7 @@ def evaluate_recog(
         all_scores.append(cos_sim.cpu().numpy())
         all_labels.append(labels.numpy())
 
-    metrics = compute_recog_metrics(
+    metrics = compute_authentication_metrics(
         np.concatenate(all_scores), np.concatenate(all_labels)
     )
 
@@ -207,7 +207,7 @@ def evaluate_pad(
 
     all_probs = np.concatenate(all_probs)
     all_labels = np.concatenate(all_labels)
-    metrics = compute_pad_metrics(all_labels, all_probs)
+    metrics = compute_pad_metrics(all_probs, all_labels)
 
     return {"loss": avg_loss, **metrics}
 
@@ -460,7 +460,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         split_path=data_cfg["recog_split_path"],
         transform=train_transform,
     )
-    recog_val_dataset = RecogEvaluationDataset(
+    recog_val_dataset = AuthenticationEvaluationDataset(
         split_path=data_cfg["recog_split_path"],
         split="val",
         n_genuine_impressions=data_cfg["n_genuine_impressions"],
@@ -469,7 +469,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         n_impostor_subset=data_cfg["n_impostor_subset"],
         seed=general_cfg["seed"],
     )
-    unique_val_dataset = UniqueImageDataset(
+    unique_val_dataset = UniqueFingerprintDataset(
         idx_to_path=recog_val_dataset.idx_to_path, transform=eval_transform
     )
 
@@ -670,13 +670,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                 recog=f"{avg_recog_loss:.4f}",
                 pad=f"{avg_pad_loss:.4f}",
                 eer=f"{eer:.2%}",
-                ace=f"{ace:.4f}",
+                ace=f"{ace:.2%}",
                 avg_ace_eer=f"{avg_ace_eer:.2%}",
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "
                 f"loss: {avg_loss:.4f} "
-                f"(recog_loss: {avg_recog_loss:.4f}, pad_loss: {avg_pad_loss:.4f}) | "
+                f"(recog_loss={avg_recog_loss:.4f}, pad_loss={avg_pad_loss:.4f}) | "
                 f"val EER: {eer:.2%} (thr={recog_metrics['eer_threshold']:.4f}) | "
                 f"val ACE: {ace:.2%} "
                 f"(APCER={pad_metrics['apcer']:.2%}, BPCER={pad_metrics['bpcer']:.2%}) "
@@ -744,7 +744,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         else:
             import matplotlib.pyplot as plt
 
-            fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+            fig, axes = plt.subplots(1, 2, figsize=(18, 5))
 
             # Loss
             axes[0].plot(history["epoch"], history["loss"], "k-", label="Total Loss")
@@ -760,19 +760,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             # EER & ACE
             axes[1].plot(history["epoch"], history["val_eer"], "b-", label="Val EER")
             axes[1].plot(history["epoch"], history["val_ace"], "m-", label="Val ACE")
+            axes[1].plot(history["epoch"], history["val_avg_ace_eer"], "k-", label="Val avg(ACE, EER)")
             axes[1].set_xlabel("Epoch")
             axes[1].set_ylabel("Error Rate")
             axes[1].legend()
             axes[1].set_title("Validation Metrics")
-
-            # Combined
-            axes[2].plot(
-                history["epoch"], history["val_avg_ace_eer"], "k-", label="avg(ACE, EER)"
-            )
-            axes[2].set_xlabel("Epoch")
-            axes[2].set_ylabel("avg(ACE, EER)")
-            axes[2].legend()
-            axes[2].set_title("Best Model Selection Metric")
 
             plt.suptitle("Joint Training History")
             plt.tight_layout()

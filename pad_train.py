@@ -117,7 +117,7 @@ def evaluate(
 
     all_probs = np.concatenate(all_probs)
     all_labels = np.concatenate(all_labels)
-    metrics = compute_pad_metrics(all_labels, all_probs)
+    metrics = compute_pad_metrics(all_probs, all_labels)
 
     return {
         "loss": avg_loss,
@@ -432,7 +432,8 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
             epoch_pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
-                ace=f"{metrics['ace']:.4f}",
+                ace=f"{metrics['ace']:.2%}",
+                threshold=f"{metrics['threshold']:.4f}",
             )
             tqdm.write(
                 f"Epoch {epoch:03d} | "

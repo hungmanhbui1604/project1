@@ -10,7 +10,7 @@ data:
   transform_name: "dual"
 
 training:
-  epochs: 50
+  epochs: 40
   pad_batch_size: 128
   num_workers: 8
   pin_memory: true
@@ -33,7 +33,7 @@ optimizer:
 
 scheduler:
   sched_name: "cosine"
-  warmup_epochs: 3
+  warmup_epochs: 2
   min_lr: 1.0e-5
 
 output:
