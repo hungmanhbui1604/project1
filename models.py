@@ -74,34 +74,29 @@ class DualViT(nn.Module):
         x = self.shared_blocks(x)
         return x
 
-    def branch_forward(self, x, branch):
-        x = self.shared_forward(x)
-        if branch == 'a':
-            x = self.branch_a_blocks(x)
-            x = self.branch_a_norm(x)
-            out = self.branch_a_head(x[:, 0].contiguous())
-        elif branch == 'b':
-            x = self.branch_b_blocks(x)
-            x = self.branch_b_norm(x)
-            out = self.branch_b_head(x[:, 0].contiguous())
-        else:
-            raise ValueError(f"Invalid branch: {branch}")
-        return out
-
-    def forward(self, x):
+    def forward(self, x, branch=None):
         shared_features = self.shared_forward(x)
 
-        branch_a_x = shared_features
-        branch_a_x = self.branch_a_blocks(branch_a_x)
-        branch_a_norm_x = self.branch_a_norm(branch_a_x)
-        branch_a_out = self.branch_a_head(branch_a_norm_x[:, 0].contiguous())
+        branch_a_out = None
+        branch_b_out = None
 
-        branch_b_x = shared_features
-        branch_b_x = self.branch_b_blocks(branch_b_x)
-        branch_b_norm_x = self.branch_b_norm(branch_b_x)
-        branch_b_out = self.branch_b_head(branch_b_norm_x[:, 0].contiguous())
+        embs = [None, None]
 
-        return branch_a_out, branch_b_out
+        if branch is None or branch == 'a':
+            branch_a_x = self.branch_a_blocks(shared_features)
+            branch_a_norm_x = self.branch_a_norm(branch_a_x)
+            branch_a_emb = branch_a_norm_x[:, 0].contiguous()
+            embs[0] = branch_a_emb
+            branch_a_out = self.branch_a_head(branch_a_emb)
+
+        if branch is None or branch == 'b':
+            branch_b_x = self.branch_b_blocks(shared_features)
+            branch_b_norm_x = self.branch_b_norm(branch_b_x)
+            branch_b_emb = branch_b_norm_x[:, 0].contiguous()
+            embs[1] = branch_b_emb
+            branch_b_out = self.branch_b_head(branch_b_emb)
+
+        return branch_a_out, branch_b_out, embs
 
 
 class DualMobileViT(nn.Module):
@@ -143,39 +138,31 @@ class DualMobileViT(nn.Module):
         x = self.shared_stem(x)
         out = self.shared_stages(x)
         return out
-
-    def branch_forward(self, x, branch):
-        x = self.shared_forward(x)
-        if branch == 'a':
-            x = self.branch_a_stages(x)
-            x = self.branch_a_final_conv(x)
-            x = x.mean([-2, -1])
-            out = self.branch_a_head(x)
-        elif branch == 'b':
-            x = self.branch_b_stages(x)
-            x = self.branch_b_final_conv(x)
-            x = x.mean([-2, -1])
-            out = self.branch_b_head(x)
-        else:
-            raise ValueError(f"Invalid branch: {branch}")
-        return out
     
-    def forward(self, x):
+    def forward(self, x, branch=None):
         shared_features = self.shared_forward(x)
 
-        branch_a_x = shared_features
-        branch_a_x = self.branch_a_stages(branch_a_x)
-        branch_a_x = self.branch_a_final_conv(branch_a_x)
-        branch_a_x = branch_a_x.mean([-2, -1])
-        branch_a_out = self.branch_a_head(branch_a_x)
+        branch_a_out = None
+        branch_b_out = None
+        embs = [None, None]
 
-        branch_b_x = shared_features
-        branch_b_x = self.branch_b_stages(branch_b_x)
-        branch_b_x = self.branch_b_final_conv(branch_b_x)
-        branch_b_x = branch_b_x.mean([-2, -1])
-        branch_b_out = self.branch_b_head(branch_b_x)
+        if branch is None or branch == 'a':
+            branch_a_x = shared_features
+            branch_a_x = self.branch_a_stages(branch_a_x)
+            branch_a_x = self.branch_a_final_conv(branch_a_x)
+            branch_a_x = branch_a_x.mean([-2, -1])
+            embs[0] = branch_a_x
+            branch_a_out = self.branch_a_head(branch_a_x)
 
-        return branch_a_out, branch_b_out
+        if branch is None or branch == 'b':
+            branch_b_x = shared_features
+            branch_b_x = self.branch_b_stages(branch_b_x)
+            branch_b_x = self.branch_b_final_conv(branch_b_x)
+            branch_b_x = branch_b_x.mean([-2, -1])
+            embs[1] = branch_b_x
+            branch_b_out = self.branch_b_head(branch_b_x)
+
+        return branch_a_out, branch_b_out, embs
 
 
 def get_model(model_name, model_cfg):

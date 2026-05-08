@@ -1,0 +1,63 @@
+general:
+  seed: 42
+
+wandb:
+  api_key: null
+  project: "Dual-DistillJoint"
+
+data:
+  recog_split_path: "data/recog_splits.json"
+  pad_split_path: "data/pad_splits.json"
+  n_genuine_impressions: 32
+  n_impostor_impressions: 1
+  impostor_mode: "all"
+  n_impostor_subset: null
+  gallery_per_id: 1
+  probe_per_id: null
+  transform_name: "dual"
+
+training:
+  epochs: 200
+  recog_batch_size: 256
+  pad_batch_size: 128
+  num_workers: 8
+  pin_memory: true
+  checkpoint_interval: 40
+
+model:
+  model_name: "mobilevitv2_100.cvnets_in1k"
+  pretrained: true
+  shared_stages: 3
+  branch_a_num_classes: 256
+  branch_b_num_classes: 1
+  head_hidden_dim: 256
+  head_drop_rate: 0.5
+  ckpt_path: null
+  recog_teacher_ckpt: "ckpts/recog/best_model.pth"
+  pad_teacher_ckpt: "ckpts/pad/best_model.pth"
+
+loss:
+  margin: 0.5
+  scale: 32.0
+  recog_weight: 1.0
+  pad_weight: 1.0
+  recog_distill_weight: 1.0
+  pad_distill_weight: 1.0
+
+optimizer:
+  opt_name: "adam"
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+
+scheduler:
+  sched_name: "cosine"
+  warmup_epochs: 10
+  min_lr: 1.0e-5
+
+output:
+  checkpoint_dir: "ckpts/distill-joint/"
+  best_model_name: "best_model.pth"
+
+evaluation:
+  recog_batch_size: 1024
+  pad_batch_size: 128

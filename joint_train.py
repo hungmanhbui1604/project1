@@ -111,10 +111,10 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb_a = model.branch_forward(imgs, branch="a")
-        emb_a = F.normalize(emb_a, dim=1).float()
+            embs, _, _ = model(imgs, branch="a")
+        embs = F.normalize(embs, dim=1).float()
 
-        local_embeddings[idxs] = emb_a
+        local_embeddings[idxs] = embs
         mask[idxs] = True
 
     counts = torch.zeros(n_unique_images, device=device)
@@ -194,7 +194,7 @@ def evaluate_pad(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            logits = model.branch_forward(images, branch="b")
+            _, logits, _ = model(images, branch="b")
             loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         total_loss += loss.item()
@@ -374,17 +374,17 @@ def train_one_epoch(
             # Single forward pass: concatenate both batches to avoid
             # DDP inplace-modification errors on shared backbone buffers
             combined = torch.cat([recog_images, pad_images], dim=0)
-            emb_a, emb_b = model(combined)
+            embs, logits, _ = model(combined)
 
             # Split outputs back
             n_recog = recog_images.size(0)
-            recog_emb = emb_a[:n_recog]
-            pad_logits = emb_b[n_recog:]
+            embs = embs[:n_recog]
+            logits = logits[n_recog:]
 
             # Losses
-            recog_loss, _ = arcface_loss(recog_emb, recog_labels)
+            recog_loss, _ = arcface_loss(embs, recog_labels)
             pad_loss = F.binary_cross_entropy_with_logits(
-                pad_logits.squeeze(1), pad_labels.float()
+                logits.squeeze(1), pad_labels.float()
             )
 
             loss = recog_weight * recog_loss + pad_weight * pad_loss

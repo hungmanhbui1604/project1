@@ -5,17 +5,23 @@ import random
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn as nn
 import torch.nn.functional as F
-import wandb
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-from data import AuthenticationEvaluationDataset, RecogTrainingDataset, UniqueFingerprintDataset
+import wandb
+from data import (
+    AuthenticationEvaluationDataset,
+    PADDataset,
+    RecogTrainingDataset,
+    UniqueFingerprintDataset,
+)
 from losses import ArcFaceLoss
-from metrics import compute_authentication_metrics
+from metrics import compute_authentication_metrics, compute_pad_metrics
 from models import get_model
 from schedulers import get_scheduler
 from transforms import get_transforms
@@ -75,7 +81,7 @@ def get_optimizer(opt_name: str, parameters: list, opt_cfg: dict):
 
 
 # ---------------------------------------------------------------------------
-# Embedding Extraction & Evaluation
+# Recognition Evaluation (Branch A)
 # ---------------------------------------------------------------------------
 
 
@@ -96,7 +102,7 @@ def get_embeddings(
 
     pbar = tqdm(
         val_unique_loader,
-        desc=f"Epoch {epoch:03d} [val extract]",
+        desc=f"Epoch {epoch:03d} [recog extract]",
         leave=False,
         unit="batch",
         disable=not is_main(),
@@ -105,10 +111,10 @@ def get_embeddings(
     for idxs, imgs in pbar:
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            embs, _, _ = model(imgs, branch="a")
-        embs = F.normalize(embs, dim=1).float()
+            emb_a, _, _ = model(imgs, branch="a")
+        emb_a = F.normalize(emb_a, dim=1).float()
 
-        local_embeddings[idxs] = embs
+        local_embeddings[idxs] = emb_a
         mask[idxs] = True
 
     counts = torch.zeros(n_unique_images, device=device)
@@ -123,7 +129,7 @@ def get_embeddings(
 
 
 @torch.no_grad()
-def evaluate(
+def evaluate_recog(
     val_loader: DataLoader,
     global_embeddings: torch.Tensor,
     device: torch.device,
@@ -133,7 +139,7 @@ def evaluate(
 
     pbar = tqdm(
         val_loader,
-        desc=f"Epoch {epoch:03d} [val evaluate]",
+        desc=f"Epoch {epoch:03d} [recog eval]",
         leave=False,
         unit="batch",
         disable=not is_main(),
@@ -159,6 +165,54 @@ def evaluate(
 
 
 # ---------------------------------------------------------------------------
+# PAD Evaluation (Branch B)
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def evaluate_pad(
+    model: nn.Module,
+    val_loader: DataLoader,
+    device: torch.device,
+    epoch: int,
+) -> dict[str, float]:
+    model.eval()
+
+    total_loss = 0.0
+    all_probs, all_labels = [], []
+
+    pbar = tqdm(
+        val_loader,
+        desc=f"Epoch {epoch:03d} [pad eval]",
+        leave=False,
+        unit="batch",
+        disable=not is_main(),
+    )
+
+    for images, labels in pbar:
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
+
+        with torch.autocast(device_type="cuda"):
+            _, logits, _ = model(images, branch="b")
+            loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
+
+        total_loss += loss.item()
+
+        probs = torch.sigmoid(logits)
+        all_probs.append(probs.cpu().numpy())
+        all_labels.append(labels.cpu().numpy())
+
+    avg_loss = total_loss / len(val_loader)
+
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+    metrics = compute_pad_metrics(all_probs, all_labels)
+
+    return {"loss": avg_loss, **metrics}
+
+
+# ---------------------------------------------------------------------------
 # Checkpoint Management
 # ---------------------------------------------------------------------------
 
@@ -172,7 +226,7 @@ def load_checkpoint(
     scaler: torch.amp.GradScaler,
 ) -> tuple[int, float]:
     start_epoch = 1
-    best_eer = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if os.path.isfile(path):
         if is_main():
@@ -188,8 +242,8 @@ def load_checkpoint(
             scaler.load_state_dict(ckpt_dict["scaler"])
         if "epoch" in ckpt_dict:
             start_epoch = ckpt_dict["epoch"] + 1
-        if "eer" in ckpt_dict:
-            best_eer = ckpt_dict["eer"]
+        if "avg_ace_eer" in ckpt_dict:
+            best_avg_ace_eer = ckpt_dict["avg_ace_eer"]
 
         if is_main():
             print(f"=> Loaded checkpoint (epoch {start_epoch - 1})")
@@ -197,7 +251,7 @@ def load_checkpoint(
         if is_main():
             print(f"=> No checkpoint found at '{path}'")
 
-    return start_epoch, best_eer
+    return start_epoch, best_avg_ace_eer
 
 
 def save_checkpoint(
@@ -208,7 +262,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
-    eer: float,
+    avg_ace_eer: float,
 ) -> None:
     torch.save(
         {
@@ -218,7 +272,7 @@ def save_checkpoint(
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
-            "eer": eer,
+            "avg_ace_eer": avg_ace_eer,
         },
         path,
     )
@@ -228,7 +282,7 @@ def save_checkpoint(
         artifact = wandb.Artifact(
             name=f"checkpoint-epoch{epoch:03d}",
             type="checkpoint",
-            metadata={"epoch": epoch, "eer": eer},
+            metadata={"epoch": epoch, "avg_ace_eer": avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
@@ -240,29 +294,29 @@ def save_best(
     best_name: str,
     epoch: int,
     model: DDP,
-    eer: float,
+    avg_ace_eer: float,
 ) -> None:
     path = os.path.join(ckpt_dir, best_name)
     torch.save(
         {
             "epoch": epoch,
             "model": _unwrap(model).state_dict(),
-            "eer": eer,
+            "avg_ace_eer": avg_ace_eer,
         },
         path,
     )
-    tqdm.write(f"  [best model] EER={eer:.2%} saved → {path}")
+    tqdm.write(f"  [best model] avg(ACE,EER)={avg_ace_eer:.2%} saved → {path}")
 
     if wandb.run is not None:
         artifact = wandb.Artifact(
             name="best-model",
             type="model",
-            metadata={"epoch": epoch, "eer": eer},
+            metadata={"epoch": epoch, "avg_ace_eer": avg_ace_eer},
         )
         artifact.add_file(path)
         wandb.log_artifact(artifact)
-        wandb.run.summary["best_val_eer"] = eer
-        wandb.run.summary["best_val_eer_epoch"] = epoch
+        wandb.run.summary["best_val_avg_ace_eer"] = avg_ace_eer
+        wandb.run.summary["best_val_avg_ace_eer_epoch"] = epoch
         tqdm.write("  [wandb] best-model artifact logged")
 
 
@@ -273,45 +327,102 @@ def save_best(
 
 def train_one_epoch(
     model: DDP,
+    recog_teacher_model: nn.Module,
+    pad_teacher_model: nn.Module,
     arcface_loss: DDP,
-    train_loader: DataLoader,
-    train_sampler: DistributedSampler,
+    recog_loader: DataLoader,
+    recog_sampler: DistributedSampler,
+    pad_loader: DataLoader,
+    pad_sampler: DistributedSampler,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler._LRScheduler,
     scaler: torch.amp.GradScaler,
     device: torch.device,
     epoch: int,
-) -> float:
+    steps_per_epoch: int,
+    recog_weight: float,
+    pad_weight: float,
+    recog_distill_weight: float,
+    pad_distill_weight: float,
+) -> tuple:
     model.train()
     arcface_loss.train()
-
-    train_sampler.set_epoch(epoch)
+    recog_sampler.set_epoch(epoch)
+    pad_sampler.set_epoch(epoch)
 
     total_loss = 0.0
+    total_recog_loss = 0.0
+    total_pad_loss = 0.0
+    total_recog_distill_loss = 0.0
+    total_pad_distill_loss = 0.0
+
     all_params = list(model.parameters()) + list(arcface_loss.parameters())
 
+    # Truncate to the shorter loader via zip
     pbar = tqdm(
-        train_loader,
+        zip(recog_loader, pad_loader),
         desc=f"[train] Epoch {epoch:03d}",
+        total=steps_per_epoch,
         leave=False,
-        unit="batch",
+        unit="step",
         disable=not is_main(),
     )
 
-    for images, labels in pbar:
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+    for (recog_images, recog_labels), (pad_images, pad_labels) in pbar:
+        recog_images = recog_images.to(device, non_blocking=True)
+        recog_labels = recog_labels.to(device, non_blocking=True)
+        pad_images = pad_images.to(device, non_blocking=True)
+        pad_labels = pad_labels.to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type="cuda"):
-            embeddings, _, _ = model(images, branch="a")
-            loss, _ = arcface_loss(embeddings, labels)
+            # Single forward pass: concatenate both batches to avoid
+            # DDP inplace-modification errors on shared backbone buffers
+            combined = torch.cat([recog_images, pad_images], dim=0)
+            with torch.no_grad():
+                _, _, recog_teacher_final_embs = recog_teacher_model(
+                    combined, branch="a"
+                )
+                _, _, pad_teacher_final_embs = pad_teacher_model(combined, branch="b")
+            student_a_embs, student_logits, student_final_embs = model(combined)
+
+            # Split outputs back
+            n_recog = recog_images.size(0)
+            student_a_embs = student_a_embs[:n_recog]
+            student_logits = student_logits[n_recog:]
+
+            # Losses
+            recog_loss, _ = arcface_loss(student_a_embs, recog_labels)
+            pad_loss = F.binary_cross_entropy_with_logits(
+                student_logits.squeeze(1), pad_labels.float()
+            )
+            recog_distill_loss = (
+                1
+                - F.cosine_similarity(
+                    F.normalize(student_final_embs[0], dim=1),
+                    F.normalize(recog_teacher_final_embs[0], dim=1),
+                    dim=1,
+                ).mean()
+            )
+            pad_distill_loss = F.mse_loss(
+                student_final_embs[1], pad_teacher_final_embs[1]
+            )
+
+            loss = (
+                recog_weight * recog_loss
+                + pad_weight * pad_loss
+                + recog_distill_weight * recog_distill_loss
+                + pad_distill_weight * pad_distill_loss
+            )
 
         scaler.scale(loss).backward()
 
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+
+        # Only step scheduler when optimizer actually steps (avoids warning
+        # when scaler skips due to inf/nan gradients)
         old_scale = scaler.get_scale()
         scaler.step(optimizer)
         scaler.update()
@@ -319,13 +430,34 @@ def train_one_epoch(
         if new_scale >= old_scale:
             scheduler.step()
 
-        loss_val = loss.item()
+        total_loss += loss.item()
+        total_recog_loss += recog_loss.item()
+        total_pad_loss += pad_loss.item()
+        total_recog_distill_loss += recog_distill_loss.item()
+        total_pad_distill_loss += pad_distill_loss.item()
+
         lr_val = scheduler.get_last_lr()[0]
-        total_loss += loss_val
+        pbar.set_postfix(
+            total=f"{loss.item():.4f}",
+            recog=f"{recog_loss.item():.4f}",
+            pad=f"{pad_loss.item():.4f}",
+            recog_distill=f"{recog_distill_loss.item():.4f}",
+            pad_distill=f"{pad_distill_loss.item():.4f}",
+            lr=f"{lr_val:.2e}",
+        )
 
-        pbar.set_postfix(loss=f"{loss_val:.4f}", lr=f"{lr_val:.2e}")
-
-    return total_loss / len(train_loader)
+    avg_loss = total_loss / steps_per_epoch
+    avg_recog_loss = total_recog_loss / steps_per_epoch
+    avg_pad_loss = total_pad_loss / steps_per_epoch
+    avg_recog_distill_loss = total_recog_distill_loss / steps_per_epoch
+    avg_pad_distill_loss = total_pad_distill_loss / steps_per_epoch
+    return (
+        avg_loss,
+        avg_recog_loss,
+        avg_pad_loss,
+        avg_recog_distill_loss,
+        avg_pad_distill_loss,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -362,13 +494,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # ── Transforms ────────────────────────────────────────────────────────
     train_transform, eval_transform, _ = get_transforms(data_cfg["transform_name"])
 
-    # ── Datasets ──────────────────────────────────────────────────────────
-    train_dataset = RecogTrainingDataset(
-        split_path=data_cfg["split_path"],
+    # ── Recognition Datasets ─────────────────────────────────────────────
+    recog_train_dataset = RecogTrainingDataset(
+        split_path=data_cfg["recog_split_path"],
         transform=train_transform,
     )
-    val_dataset = AuthenticationEvaluationDataset(
-        split_path=data_cfg["split_path"],
+    recog_val_dataset = AuthenticationEvaluationDataset(
+        split_path=data_cfg["recog_split_path"],
         split="val",
         n_genuine_impressions=data_cfg["n_genuine_impressions"],
         n_impostor_impressions=data_cfg["n_impostor_impressions"],
@@ -377,31 +509,61 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         seed=general_cfg["seed"],
     )
     unique_val_dataset = UniqueFingerprintDataset(
-        idx_to_path=val_dataset.idx_to_path, transform=eval_transform
+        idx_to_path=recog_val_dataset.idx_to_path, transform=eval_transform
+    )
+
+    # ── PAD Datasets ─────────────────────────────────────────────────────
+    pad_train_dataset = PADDataset(
+        split_path=data_cfg["pad_split_path"],
+        split="train",
+        transform=train_transform,
+    )
+    pad_val_dataset = PADDataset(
+        split_path=data_cfg["pad_split_path"],
+        split="val",
+        transform=eval_transform,
     )
 
     if is_main():
-        print(f"\n{train_dataset}")
-        print(f"{val_dataset}")
+        print(f"\n{recog_train_dataset}")
+        print(f"{recog_val_dataset}")
+        print(f"{pad_train_dataset}")
+        print(f"{pad_val_dataset}")
 
     # ── Dataloaders ───────────────────────────────────────────────────────
-    train_sampler = DistributedSampler(
-        train_dataset,
+    recog_train_sampler = DistributedSampler(
+        recog_train_dataset,
         num_replicas=world_size,
         rank=local_rank,
         shuffle=True,
         seed=general_cfg["seed"],
     )
-    train_loader = DataLoader(
-        train_dataset,
+    recog_train_loader = DataLoader(
+        recog_train_dataset,
         batch_size=train_cfg["recog_batch_size"],
-        sampler=train_sampler,
+        sampler=recog_train_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
     )
 
-    val_loader = DataLoader(
-        val_dataset,
+    pad_train_sampler = DistributedSampler(
+        pad_train_dataset,
+        num_replicas=world_size,
+        rank=local_rank,
+        shuffle=True,
+        seed=general_cfg["seed"],
+    )
+    pad_train_loader = DataLoader(
+        pad_train_dataset,
+        batch_size=train_cfg["pad_batch_size"],
+        sampler=pad_train_sampler,
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
+    )
+
+    # Validation loaders
+    recog_val_loader = DataLoader(
+        recog_val_dataset,
         batch_size=eval_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
@@ -423,6 +585,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         pin_memory=train_cfg["pin_memory"],
     )
 
+    pad_val_loader = DataLoader(
+        pad_val_dataset,
+        batch_size=eval_cfg["pad_batch_size"],
+        shuffle=False,
+        num_workers=train_cfg["num_workers"],
+        pin_memory=train_cfg["pin_memory"],
+    )
+
     # ── Model ─────────────────────────────────────────────────────────────
     model = get_model(model_cfg["model_name"], model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
@@ -430,19 +600,30 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
             torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"]
         )
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
-    model = DDP(
-        model,
-        device_ids=[local_rank],
-        output_device=local_rank,
-        find_unused_parameters=True,
-    )
+    model = DDP(model, device_ids=[local_rank], output_device=local_rank)
 
     if is_main():
         n_params = sum(p.numel() for p in model.parameters()) / 1e6
-        print(f"[model] {model_cfg['model_name']} ({n_params:.2f}M params)")
+        print(f"[model] {model_cfg['model_name']}  ({n_params:.2f}M params)")
+
+    recog_teacher_model = get_model(model_cfg["model_name"], model_cfg).to(device)
+    recog_teacher_model.load_state_dict(
+        torch.load(model_cfg["recog_teacher_ckpt"], map_location="cpu", weights_only=False)["model"]
+    )
+    tqdm.write(f"  [recog-teacher model] loaded from {model_cfg['recog_teacher_ckpt']}")
+    for param in recog_teacher_model.parameters():
+        param.requires_grad = False
+
+    pad_teacher_model = get_model(model_cfg["model_name"], model_cfg).to(device)
+    pad_teacher_model.load_state_dict(
+        torch.load(model_cfg["pad_teacher_ckpt"], map_location="cpu", weights_only=False)["model"]
+    )
+    tqdm.write(f"  [pad-teacher model] loaded from {model_cfg['pad_teacher_ckpt']}")
+    for param in pad_teacher_model.parameters():
+        param.requires_grad = False
 
     # ── Loss ──────────────────────────────────────────────────────────────
-    n_ids = train_dataset.n_ids
+    n_ids = recog_train_dataset.n_ids
     arcface_loss = ArcFaceLoss(
         embed_dim=model_cfg["branch_a_num_classes"],
         num_classes=n_ids,
@@ -452,13 +633,16 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     arcface_loss = DDP(arcface_loss, device_ids=[local_rank], output_device=local_rank)
 
     # ── Optimizer, Scheduler, Scaler ──────────────────────────────────────
-    all_parameters = list(model.parameters()) + list(arcface_loss.parameters())
-    optimizer = get_optimizer(opt_cfg["opt_name"], all_parameters, opt_cfg)
+    all_params = list(model.parameters()) + list(arcface_loss.parameters())
+    optimizer = get_optimizer(
+        opt_name=opt_cfg["opt_name"], parameters=all_params, opt_cfg=opt_cfg
+    )
 
+    steps_per_epoch = min(len(recog_train_loader), len(pad_train_loader))
     scheduler = get_scheduler(
-        sched_cfg["sched_name"],
-        optimizer,
-        iters=len(train_loader),
+        sched_name=sched_cfg["sched_name"],
+        optimizer=optimizer,
+        iters=steps_per_epoch,
         epochs=train_cfg["epochs"],
         sched_cfg=sched_cfg,
     )
@@ -467,21 +651,31 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     # ── Training loop ─────────────────────────────────────────────────────
     start_epoch = 1
-    best_eer = float("inf")
+    best_avg_ace_eer = float("inf")
 
     if checkpoint is not None:
-        start_epoch, best_eer = load_checkpoint(
+        start_epoch, best_avg_ace_eer = load_checkpoint(
             checkpoint, model, arcface_loss, optimizer, scheduler, scaler
         )
 
     if is_main():
         if not wandb.run:
-            history = {"epoch": [], "train_loss": [], "val_eer": []}
+            history = {
+                "epoch": [],
+                "loss": [],
+                "recog_loss": [],
+                "pad_loss": [],
+                "recog_distill_loss": [],
+                "pad_distill_loss": [],
+                "val_eer": [],
+                "val_ace": [],
+                "val_avg_ace_eer": [],
+            }
 
         os.makedirs(output_cfg["checkpoint_dir"], exist_ok=True)
 
         print("\n" + "=" * 60)
-        print("Starting recognition training")
+        print("Starting distill joint training")
         print("=" * 60)
 
     epoch_pbar = tqdm(
@@ -492,65 +686,108 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
 
     for epoch in epoch_pbar:
-        avg_loss = train_one_epoch(
+        (
+            avg_loss,
+            avg_recog_loss,
+            avg_pad_loss,
+            avg_recog_distill_loss,
+            avg_pad_distill_loss,
+        ) = train_one_epoch(
             model,
+            recog_teacher_model,
+            pad_teacher_model,
             arcface_loss,
-            train_loader,
-            train_sampler,
+            recog_train_loader,
+            recog_train_sampler,
+            pad_train_loader,
+            pad_train_sampler,
             optimizer,
             scheduler,
             scaler,
             device,
             epoch,
+            steps_per_epoch,
+            loss_cfg["recog_weight"],
+            loss_cfg["pad_weight"],
+            loss_cfg["recog_distill_weight"],
+            loss_cfg["pad_distill_weight"],
         )
 
         dist.barrier()
 
+        # ── Recognition evaluation ────────────────────────────────────────
         global_embeddings = get_embeddings(
             _unwrap(model), unique_val_loader, device, epoch
         )
 
         if is_main():
-            metrics = evaluate(val_loader, global_embeddings, device, epoch)
+            recog_metrics = evaluate_recog(
+                recog_val_loader, global_embeddings, device, epoch
+            )
+
+            # ── PAD evaluation ────────────────────────────────────────────
+            pad_metrics = evaluate_pad(_unwrap(model), pad_val_loader, device, epoch)
+
+            eer = recog_metrics["eer"]
+            ace = pad_metrics["ace"]
+            avg_ace_eer = (ace + eer) / 2.0
 
             epoch_pbar.set_postfix(
                 loss=f"{avg_loss:.4f}",
-                eer=f"{metrics['eer']:.2%}",
-                thr=f"{metrics['eer_threshold']:.4f}",
+                recog=f"{avg_recog_loss:.4f}",
+                pad=f"{avg_pad_loss:.4f}",
+                recog_distill=f"{avg_recog_distill_loss:.4f}",
+                pad_distill=f"{avg_pad_distill_loss:.4f}",
+                eer=f"{eer:.2%}",
+                ace=f"{ace:.2%}",
+                avg_ace_eer=f"{avg_ace_eer:.2%}",
             )
             tqdm.write(
-                f"Epoch {epoch:03d} | avg loss: {avg_loss:.4f} | "
-                f"val EER: {metrics['eer']:.2%}  (thr={metrics['eer_threshold']:.4f}) | "
-                f"val TAR@FAR=0.1: {metrics['tar_at_far_0.1']:.2%} | "
-                f"val TAR@FAR=0.01: {metrics['tar_at_far_0.01']:.2%} | "
-                f"val TAR@FAR=0.001: {metrics['tar_at_far_0.001']:.2%}"
+                f"Epoch {epoch:03d} | "
+                f"loss: {avg_loss:.4f} "
+                f"(recog_loss={avg_recog_loss:.4f}, pad_loss={avg_pad_loss:.4f}, recog_distill_loss={avg_recog_distill_loss:.4f}, pad_distill_loss={avg_pad_distill_loss:.4f}) | "
+                f"val EER: {eer:.2%} (thr={recog_metrics['eer_threshold']:.4f}) | "
+                f"val ACE: {ace:.2%} "
+                f"(APCER={pad_metrics['apcer']:.2%}, BPCER={pad_metrics['bpcer']:.2%}) "
+                f"(thr={pad_metrics['threshold']:.4f}) | "
+                f"avg(ACE,EER): {avg_ace_eer:.2%}"
             )
 
             if wandb.run is not None:
                 wandb.log(
                     {
                         "train/loss": avg_loss,
-                        "val/eer": metrics["eer"],
-                        "val/eer_threshold": metrics["eer_threshold"],
-                        "val/tar_at_far_0.1": metrics["tar_at_far_0.1"],
-                        "val/tar_at_far_0.01": metrics["tar_at_far_0.01"],
-                        "val/tar_at_far_0.001": metrics["tar_at_far_0.001"],
+                        "train/recog_loss": avg_recog_loss,
+                        "train/pad_loss": avg_pad_loss,
+                        "train/recog_distill_loss": avg_recog_distill_loss,
+                        "train/pad_distill_loss": avg_pad_distill_loss,
                         "epoch": epoch,
+                        "val/eer": eer,
+                        "val/eer_threshold": recog_metrics["eer_threshold"],
+                        "val/ace": ace,
+                        "val/pad_threshold": pad_metrics["threshold"],
+                        "val/avg_ace_eer": avg_ace_eer,
                     }
                 )
             else:
                 history["epoch"].append(epoch)
-                history["train_loss"].append(avg_loss)
-                history["val_eer"].append(metrics["eer"])
+                history["loss"].append(avg_loss)
+                history["recog_loss"].append(avg_recog_loss)
+                history["pad_loss"].append(avg_pad_loss)
+                history["recog_distill_loss"].append(avg_recog_distill_loss)
+                history["pad_distill_loss"].append(avg_pad_distill_loss)
+                history["val_eer"].append(eer)
+                history["val_ace"].append(ace)
+                history["val_avg_ace_eer"].append(avg_ace_eer)
 
-            if metrics["eer"] < best_eer:
-                best_eer = metrics["eer"]
+            if avg_ace_eer < best_avg_ace_eer:
+                best_avg_ace_eer = avg_ace_eer
                 save_best(
                     output_cfg["checkpoint_dir"],
                     output_cfg["best_model_name"],
                     epoch,
                     model,
-                    metrics["eer"],
+                    avg_ace_eer,
                 )
 
             if epoch % train_cfg["checkpoint_interval"] == 0:
@@ -565,14 +802,14 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
                     optimizer,
                     scheduler,
                     scaler,
-                    metrics["eer"],
+                    avg_ace_eer,
                 )
 
         dist.barrier()
 
     if is_main():
         print("=" * 60)
-        print(f"Training complete. Best val EER: {best_eer:.2%}")
+        print(f"Training complete. Best val avg(ACE, EER): {best_avg_ace_eer:.2%}")
         print("=" * 60)
 
         if wandb.run is not None:
@@ -580,21 +817,47 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         else:
             import matplotlib.pyplot as plt
 
-            fig, ax1 = plt.subplots(figsize=(10, 5))
-            ax2 = ax1.twinx()
+            fig, axes = plt.subplots(1, 2, figsize=(18, 5))
 
-            ax1.plot(history["epoch"], history["train_loss"], "g-", label="Train Loss")
-            ax2.plot(history["epoch"], history["val_eer"], "b-", label="Val EER")
+            # Loss
+            axes[0].plot(history["epoch"], history["loss"], "k-", label="Total Loss")
+            axes[0].plot(
+                history["epoch"], history["recog_loss"], "g-", label="Recog Loss"
+            )
+            axes[0].plot(history["epoch"], history["pad_loss"], "r-", label="PAD Loss")
+            axes[0].plot(
+                history["epoch"],
+                history["recog_distill_loss"],
+                "c-",
+                label="Recog Distill Loss",
+            )
+            axes[0].plot(
+                history["epoch"],
+                history["pad_distill_loss"],
+                "m-",
+                label="PAD Distill Loss",
+            )
+            axes[0].set_xlabel("Epoch")
+            axes[0].set_ylabel("Loss")
+            axes[0].legend()
+            axes[0].set_title("Training Loss")
 
-            ax1.set_xlabel("Epoch")
-            ax1.set_ylabel("Train Loss", color="g")
-            ax2.set_ylabel("Val EER", color="b")
+            # EER & ACE
+            axes[1].plot(history["epoch"], history["val_eer"], "b-", label="Val EER")
+            axes[1].plot(history["epoch"], history["val_ace"], "m-", label="Val ACE")
+            axes[1].plot(
+                history["epoch"],
+                history["val_avg_ace_eer"],
+                "k-",
+                label="Val avg(ACE, EER)",
+            )
+            axes[1].set_xlabel("Epoch")
+            axes[1].set_ylabel("Error Rate")
+            axes[1].legend()
+            axes[1].set_title("Validation Metrics")
 
-            lines_1, labels_1 = ax1.get_legend_handles_labels()
-            lines_2, labels_2 = ax2.get_legend_handles_labels()
-            ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right")
-
-            plt.title("Recognition Training History")
+            plt.suptitle("Distill Joint Training History")
+            plt.tight_layout()
             plot_path = os.path.join(
                 output_cfg["checkpoint_dir"], "training_history.png"
             )
@@ -606,11 +869,13 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Recognition Training")
+    parser = argparse.ArgumentParser(
+        description="Distill Joint Training (Recognition + PAD)"
+    )
     parser.add_argument(
         "--config",
         type=str,
-        default="recog_config.yaml",
+        default="distill_joint_config.yaml",
         help="Path to YAML config file",
     )
     parser.add_argument(

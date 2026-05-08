@@ -49,9 +49,9 @@ def collect_authentication_scores(
     for idxs, imgs in tqdm(unique_loader, desc="Extracting Embeddings", unit="batch"):
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            emb = model.branch_forward(imgs, branch="a")
-        emb = F.normalize(emb, dim=1).float()
-        embeddings[idxs] = emb
+            embs, _, _ = model(imgs, branch="a")
+        embs = F.normalize(embs, dim=1).float()
+        embeddings[idxs] = embs
 
     all_scores, all_labels = [], []
     for idx_a, idx_b, labels in tqdm(
@@ -80,7 +80,7 @@ def collect_identification_scores(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
 
-    all_features = []
+    all_embs = []
     all_labels = []
     all_indices = []
 
@@ -88,30 +88,30 @@ def collect_identification_scores(
         for imgs, labels, idx in tqdm(loader, desc="Identification Inference", unit="batch"):
             imgs = imgs.to(device, non_blocking=True)
 
-            features = model.branch_forward(imgs, branch="a")
+            embs, _, _ = model(imgs, branch="a")
 
-            features = F.normalize(features, dim=1).cpu()
+            embs = F.normalize(embs, dim=1).cpu()
 
-            all_features.append(features)
+            all_embs.append(embs)
             all_labels.extend(labels.numpy())
             all_indices.extend(idx.numpy())
 
-    all_features = torch.cat(all_features, dim=0).numpy()
+    all_embs = torch.cat(all_embs, dim=0).numpy()
     all_labels = np.array(all_labels)
     all_indices = np.array(all_indices)
 
     sort_order = np.argsort(all_indices)
-    all_features = all_features[sort_order]
+    all_embs = all_embs[sort_order]
     all_labels = all_labels[sort_order]
 
     n_gal = dataset.n_gallery
-    gallery_feats = all_features[:n_gal]
+    gallery_embs = all_embs[:n_gal]
     gallery_labels = all_labels[:n_gal]
 
-    probe_feats = all_features[n_gal:]
+    probe_embs = all_embs[n_gal:]
     probe_labels = all_labels[n_gal:]
 
-    sim_mat = np.dot(probe_feats, gallery_feats.T)
+    sim_mat = np.dot(probe_embs, gallery_embs.T)
     return sim_mat, probe_labels, gallery_labels
 
 

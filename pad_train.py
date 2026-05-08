@@ -104,7 +104,7 @@ def evaluate(
         labels = labels.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            logits = model.branch_forward(images, branch="b")
+            _, logits, _ = model(images, branch="b")
             loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         total_loss += loss.item()
@@ -260,7 +260,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits = model(images)
+            _, logits, _ = model(images, branch="b")
             loss = F.binary_cross_entropy_with_logits(logits.squeeze(1), labels.float())
 
         scaler.scale(loss).backward()
