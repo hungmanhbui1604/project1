@@ -492,6 +492,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"{pad_val_dataset}")
 
     # ── Dataloaders ───────────────────────────────────────────────────────
+    global_recog_batch_size = train_cfg["recog_batch_size"]
+    local_recog_batch_size = max(1, global_recog_batch_size // world_size)
+    global_pad_batch_size = train_cfg["pad_batch_size"]
+    local_pad_batch_size = max(1, global_pad_batch_size // world_size)
+
     recog_train_sampler = DistributedSampler(
         recog_train_dataset,
         num_replicas=world_size,
@@ -501,7 +506,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     recog_train_loader = DataLoader(
         recog_train_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=local_recog_batch_size,
         sampler=recog_train_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -516,7 +521,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     pad_train_loader = DataLoader(
         pad_train_dataset,
-        batch_size=train_cfg["pad_batch_size"],
+        batch_size=local_pad_batch_size,
         sampler=pad_train_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -540,7 +545,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=local_recog_batch_size,
         sampler=unique_val_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],

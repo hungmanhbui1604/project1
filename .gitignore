@@ -3,7 +3,6 @@ __pycache__/
 .vscode/
 ckpts/
 data/
-extracted-foreground-data/
 results/
 wandb/
 data.zip

@@ -531,6 +531,11 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
         print(f"{pad_val_dataset}")
 
     # ── Dataloaders ───────────────────────────────────────────────────────
+    global_recog_batch_size = train_cfg["recog_batch_size"]
+    local_recog_batch_size = max(1, global_recog_batch_size // world_size)
+    global_pad_batch_size = train_cfg["pad_batch_size"]
+    local_pad_batch_size = max(1, global_pad_batch_size // world_size)
+
     recog_train_sampler = DistributedSampler(
         recog_train_dataset,
         num_replicas=world_size,
@@ -540,7 +545,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     recog_train_loader = DataLoader(
         recog_train_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=local_recog_batch_size,
         sampler=recog_train_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -555,7 +560,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     pad_train_loader = DataLoader(
         pad_train_dataset,
-        batch_size=train_cfg["pad_batch_size"],
+        batch_size=local_pad_batch_size,
         sampler=pad_train_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -579,7 +584,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     unique_val_loader = DataLoader(
         unique_val_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=local_recog_batch_size,
         sampler=unique_val_sampler,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -597,7 +602,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     model = get_model(model_cfg["model_name"], model_cfg).to(device)
     if model_cfg.get("ckpt_path"):
         model.load_state_dict(
-            torch.load(model_cfg["ckpt_path"], map_location="cpu")["model"]
+            torch.load(model_cfg["ckpt_path"], map_location="cpu", weights_only=False)["model"]
         )
         tqdm.write(f"  [model] loaded from {model_cfg['ckpt_path']}")
     model = DDP(model, device_ids=[local_rank], output_device=local_rank)
@@ -610,7 +615,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     recog_teacher_model.load_state_dict(
         torch.load(model_cfg["recog_teacher_ckpt"], map_location="cpu", weights_only=False)["model"]
     )
-    tqdm.write(f"  [recog-teacher model] loaded from {model_cfg['recog_teacher_ckpt']}")
     for param in recog_teacher_model.parameters():
         param.requires_grad = False
 
@@ -618,9 +622,12 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     pad_teacher_model.load_state_dict(
         torch.load(model_cfg["pad_teacher_ckpt"], map_location="cpu", weights_only=False)["model"]
     )
-    tqdm.write(f"  [pad-teacher model] loaded from {model_cfg['pad_teacher_ckpt']}")
     for param in pad_teacher_model.parameters():
         param.requires_grad = False
+
+    if is_main():
+        tqdm.write(f"  [recog-teacher model] loaded from {model_cfg['recog_teacher_ckpt']}")
+        tqdm.write(f"  [pad-teacher model] loaded from {model_cfg['pad_teacher_ckpt']}")
 
     # ── Loss ──────────────────────────────────────────────────────────────
     n_ids = recog_train_dataset.n_ids

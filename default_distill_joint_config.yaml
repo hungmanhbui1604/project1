@@ -60,4 +60,4 @@ output:
 
 evaluation:
   recog_batch_size: 1024
-  pad_batch_size: 128
+  pad_batch_size: 256

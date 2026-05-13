@@ -11,7 +11,7 @@ data:
 
 training:
   epochs: 40
-  pad_batch_size: 128
+  pad_batch_size: 256
   num_workers: 8
   pin_memory: true
   checkpoint_interval: 10
@@ -41,4 +41,4 @@ output:
   best_model_name: "best_model.pth"
 
 evaluation:
-  pad_batch_size: 128
+  pad_batch_size: 256
