@@ -1,12 +1,12 @@
-.vscode/
 __pycache__/
 .vscode/
 ckpts/
 data/
+outputs/
 results/
 wandb/
-data.zip
 distill_joint_config.yaml
 joint_config.yaml
 pad_config.yaml
 recog_config.yaml
+dualmobilevit.onnx

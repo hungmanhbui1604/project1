@@ -59,5 +59,6 @@ output:
   best_model_name: "best_model.pth"
 
 evaluation:
-  recog_batch_size: 1024
-  pad_batch_size: 256
+  auth_batch_size: 1024
+  recog_batch_size: 256
+  pad_batch_size: 128

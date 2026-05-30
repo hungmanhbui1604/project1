@@ -530,7 +530,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     # Validation loaders
     recog_val_loader = DataLoader(
         recog_val_dataset,
-        batch_size=eval_cfg["recog_batch_size"],
+        batch_size=eval_cfg["auth_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -553,7 +553,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     pad_val_loader = DataLoader(
         pad_val_dataset,
-        batch_size=eval_cfg["pad_batch_size"],
+        batch_size=local_pad_batch_size,
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],

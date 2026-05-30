@@ -405,7 +405,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=eval_cfg["recog_batch_size"],
+        batch_size=eval_cfg["auth_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],

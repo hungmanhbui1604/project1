@@ -297,7 +297,6 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     sched_cfg = cfg["scheduler"]
     output_cfg = cfg["output"]
     wandb_cfg = cfg["wandb"]
-    eval_cfg = cfg["evaluation"]
 
     # ── DDP init ────────────────────────────────────────────────────────────
     local_rank, world_size = setup_ddp()
@@ -352,7 +351,7 @@ def main(cfg: dict, no_wandb: bool = False, checkpoint: str = None) -> None:
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=eval_cfg["pad_batch_size"],
+        batch_size=local_batch_size,
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],

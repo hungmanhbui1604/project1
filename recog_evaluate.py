@@ -172,7 +172,7 @@ def main(args: argparse.Namespace) -> None:
     # ── Dataloaders ──────────────────────────────────────────────────────
     authentication_loader = DataLoader(
         authentication_dataset,
-        batch_size=eval_cfg["recog_batch_size"],
+        batch_size=eval_cfg["auth_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -180,7 +180,7 @@ def main(args: argparse.Namespace) -> None:
 
     unique_loader = DataLoader(
         unique_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=eval_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
@@ -188,7 +188,7 @@ def main(args: argparse.Namespace) -> None:
 
     identification_loader = DataLoader(
         identification_dataset,
-        batch_size=train_cfg["recog_batch_size"],
+        batch_size=eval_cfg["recog_batch_size"],
         shuffle=False,
         num_workers=train_cfg["num_workers"],
         pin_memory=train_cfg["pin_memory"],
