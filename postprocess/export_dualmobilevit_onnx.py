@@ -18,7 +18,7 @@ class DualMobileViTWrapper(nn.Module):
 def main():
     config_path = "default_joint_config.yaml"
     checkpoint_path = "ckpts/joint.pth"
-    output_onnx_path = "dualmobilevit.onnx"
+    output_onnx_path = "outputs/dualmobilevit.onnx"
 
     cfg = yaml.safe_load(open(config_path, "r"))
     model_cfg = cfg["model"]
@@ -42,7 +42,12 @@ def main():
         opset_version=13,
         do_constant_folding=True,
         dynamo=False,
-    )
+        dynamic_axes={
+            "input": {0: "batch"},
+            "branch_a_out": {0: "batch"},
+            "branch_b_out": {0: "batch"},
+        },
+)
 
     print(f"Saved ONNX to {output_onnx_path}")
 
