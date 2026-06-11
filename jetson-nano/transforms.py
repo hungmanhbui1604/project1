@@ -127,12 +127,8 @@ infer_transform = transforms.Compose(
 )
 
 
-def get_transforms(transform_name: str) -> dict:
-    if transform_name == "dmv":
-        return {
-            "train": train_transform,
-            "test": test_transform,
-            "infer": infer_transform,
-        }
+def get_transforms(transform_name: str) -> tuple:
+    if transform_name == "dual":
+        return train_transform, test_transform, infer_transform
 
     raise ValueError("Unknown transform_name: " + transform_name)

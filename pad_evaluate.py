@@ -13,10 +13,6 @@ from metrics import compute_pad_metrics
 from models import get_model
 from transforms import get_transforms
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
@@ -42,7 +38,7 @@ def collect_probs(
         images = images.to(device, non_blocking=True)
 
         with torch.autocast(device_type="cuda"):
-            _, logits, _ = model(images, branch="b")
+            _, logits = model(images, branch="b")
 
         probs = torch.sigmoid(logits)
 
@@ -74,7 +70,7 @@ def main(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint_path}")
 
     # ── Transforms ───────────────────────────────────────────────────────
-    _, eval_transform, _ = get_transforms(data_cfg["transform_name"])
+    eval_transform = get_transforms(data_cfg["transform_name"])["test"]
 
     # ── Dataset ──────────────────────────────────────────────────────────
     dataset = PADDataset(

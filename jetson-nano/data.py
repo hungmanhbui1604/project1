@@ -3,7 +3,7 @@ import json
 import os
 import random
 from itertools import combinations
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict, List, Tuple
 
 import torchvision.transforms as transforms
 from PIL import Image
@@ -166,8 +166,8 @@ def create_recog_splits(
     seed: int = 42,
 ) -> dict:
     def _filter_by_id(
-        subject_finger_paths: dict[str, dict[str, list[str]]],
-    ) -> dict[str, dict[str, list[str]]]:
+        subject_finger_paths: Dict[str, Dict[str, List[str]]],
+    ) -> Dict[str, Dict[str, List[str]]]:
         filtered_subject_finger_paths = {}
         removed_count = 0
 
@@ -285,10 +285,10 @@ def create_pad_splits(
     split_ratio: tuple = (0.6, 0.2, 0.2),
     min_samples: Optional[int] = 3,
     seed: int = 42,
-) -> tuple[dict, dict]:
+) -> Tuple[dict, dict]:
     def _filter_by_id(
-        subject_finger_paths: dict[str, dict[str, list[str]]],
-    ) -> dict[str, dict[str, list[str]]]:
+        subject_finger_paths: Dict[str, Dict[str, List[str]]],
+    ) -> Dict[str, Dict[str, List[str]]]:
         filtered_subject_finger_paths = {}
         removed_count = 0
 
@@ -487,10 +487,10 @@ def create_LivDet_splits(
     val_ratio: float = 0.2,
     min_samples: int = 3,
     seed: int = 42,
-) -> tuple[dict, dict]:
+) -> Tuple[dict, dict]:
     def _filter_by_id(
-        subject_finger_paths: dict[str, dict[str, list[str]]],
-    ) -> dict[str, dict[str, list[str]]]:
+        subject_finger_paths: Dict[str, Dict[str, List[str]]],
+    ) -> Dict[str, Dict[str, List[str]]]:
         filtered_subject_finger_paths = {}
         removed_count = 0
 
@@ -761,8 +761,8 @@ def unify_recog_splits(split_paths: list, output_path: str = "data/splits.json")
 
 
 def unify_pad_splits(
-    recog_split_paths: Optional[list[str]] = None,
-    pad_split_paths: Optional[list[str]] = None,
+    recog_split_paths: Optional[List[str]] = None,
+    pad_split_paths: Optional[List[str]] = None,
     output_path: str = "data/pad_splits.json",
 ):
     recog_split_paths = recog_split_paths or []
@@ -963,7 +963,7 @@ class AuthenticationEvaluationDataset(Dataset):
 
 class UniqueFingerprintDataset(Dataset):
     def __init__(
-        self, idx_to_path: dict[str, int], transform: Optional[Callable] = None
+        self, idx_to_path: Dict[str, int], transform: Optional[Callable] = None
     ):
         self.idx_to_path = idx_to_path
         self.transform = transform
@@ -1198,6 +1198,7 @@ if __name__ == "__main__":
             "data/LivDet/LivDet2013/Biometrika/pad_splits.json",
             "data/LivDet/LivDet2013/CrossMatch/pad_splits.json",
             "data/LivDet/LivDet2013/Italdata/pad_splits.json",
+            "data/LivDet/LivDet2015/Biometrika/pad_splits.json",
             "data/LivDet/LivDet2015/CrossMatch/pad_splits.json",
             "data/LivDet/LivDet2015/DigitalPersona/pad_splits.json",
             "data/LivDet/LivDet2015/GreenBit/pad_splits.json",

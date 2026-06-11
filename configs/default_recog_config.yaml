@@ -3,7 +3,7 @@ general:
 
 wandb:
   api_key: null
-  project: "Dual-Recognition"
+  project: "DMV-Recognition"
 
 data:
   split_path: "data/recog_splits.json"
@@ -13,14 +13,13 @@ data:
   n_impostor_subset: null
   gallery_per_id: 1
   probe_per_id: null
-  transform_name: "dual"
+  transform_name: "dmv"
 
 training:
   epochs: 200
   recog_batch_size: 256
   num_workers: 8
   pin_memory: true
-  checkpoint_interval: 40
 
 model:
   model_name: "mobilevitv2_100.cvnets_in1k"
@@ -51,5 +50,5 @@ output:
   best_model_name: "best_model.pth"
 
 evaluation:
-  recog_batch_size: 256
+  recog_batch_size: 128
   auth_batch_size: 1024

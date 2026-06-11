@@ -1,15 +1,9 @@
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT))
-
 import torch
 import yaml
 from models import get_model
 from thop import profile, clever_format
 
-cfg = yaml.safe_load(open("default_joint_config.yaml", "r"))
+cfg = yaml.safe_load(open("configs/default_joint_config.yaml", "r"))
 model_cfg = cfg["model"]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

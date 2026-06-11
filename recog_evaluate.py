@@ -18,10 +18,6 @@ from metrics import compute_authentication_metrics, compute_identification_metri
 from models import get_model
 from transforms import get_transforms
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def load_config(path: str) -> dict:
     with open(path, "r") as f:
@@ -49,7 +45,7 @@ def collect_authentication_scores(
     for idxs, imgs in tqdm(unique_loader, desc="Extracting Embeddings", unit="batch"):
         imgs = imgs.to(device, non_blocking=True)
         with torch.autocast(device_type="cuda"):
-            embs, _, _ = model(imgs, branch="a")
+            embs, _ = model(imgs, branch="a")
         embs = F.normalize(embs, dim=1).float()
         embeddings[idxs] = embs
 
@@ -85,10 +81,12 @@ def collect_identification_scores(
     all_indices = []
 
     with torch.no_grad():
-        for imgs, labels, idx in tqdm(loader, desc="Identification Inference", unit="batch"):
+        for imgs, labels, idx in tqdm(
+            loader, desc="Identification Inference", unit="batch"
+        ):
             imgs = imgs.to(device, non_blocking=True)
 
-            embs, _, _ = model(imgs, branch="a")
+            embs, _ = model(imgs, branch="a")
 
             embs = F.normalize(embs, dim=1).cpu()
 
@@ -140,7 +138,7 @@ def main(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
     # ── Transforms ───────────────────────────────────────────────────────
-    _, eval_transform, _ = get_transforms(data_cfg["transform_name"])
+    eval_transform = get_transforms(data_cfg["transform_name"])["test"]
 
     # ── Datasets ─────────────────────────────────────────────────────────
     authentication_dataset = AuthenticationEvaluationDataset(
